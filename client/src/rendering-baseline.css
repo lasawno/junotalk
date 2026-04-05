@@ -1,0 +1,147 @@
+/*
+ * ============================================================
+ * JUNOTALK RENDERING BASELINE
+ * ============================================================
+ * This file locks down cross-browser/cross-device rendering so
+ * JunoTalk looks identical everywhere: iOS Safari, Android Chrome,
+ * Samsung Internet, Firefox Mobile, desktop Chrome/Firefox/Edge.
+ *
+ * DO NOT remove or modify rules without understanding why they exist.
+ * Every rule here fixes a specific, real rendering inconsistency.
+ * ============================================================
+ */
+
+/*
+ * 1. PREVENT BROWSER TEXT AUTO-SCALING
+ * ------------------------------------------------------------
+ * iOS Safari and Android Chrome automatically resize text they
+ * consider "too small", changing line breaks and pushing words
+ * to new lines. Setting to 100% locks the font size we declared.
+ * Without this, the same text can wrap differently on each device.
+ */
+html {
+  -webkit-text-size-adjust: 100%;
+     -moz-text-size-adjust: 100%;
+          text-size-adjust: 100%;
+}
+
+/*
+ * 2. CONSISTENT FONT RENDERING
+ * ------------------------------------------------------------
+ * Different OSes render fonts with different sub-pixel antialiasing.
+ * macOS uses "subpixel" by default; forcing "antialiased" makes
+ * font weight match what we designed. Without this, Inter Bold
+ * looks heavier on macOS than on Windows/Android, shifting layouts.
+ */
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-synthesis: none;
+}
+
+/*
+ * 3. PREVENT FAKE BOLD / FAKE ITALIC
+ * ------------------------------------------------------------
+ * When a font weight (e.g. 500 medium) is not loaded, browsers
+ * synthesize it by artificially thickening or slanting glyphs.
+ * This makes characters wider, breaking line lengths. We load
+ * 400/500/600/700 explicitly so synthesis is never needed.
+ */
+* {
+  font-synthesis: none;
+}
+
+/*
+ * 4. PREVENT FLEX/GRID CHILDREN FROM OVERFLOWING
+ * ------------------------------------------------------------
+ * By default, flex and grid children have min-width: auto,
+ * meaning they refuse to shrink below their content size.
+ * On certain browsers (Firefox especially) this causes elements
+ * to overflow their containers and push other content off-screen.
+ * Setting min-width: 0 lets them shrink correctly everywhere.
+ */
+*,
+*::before,
+*::after {
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+/*
+ * 5. WORD WRAPPING
+ * ------------------------------------------------------------
+ * Long strings (room codes, usernames, URLs) overflow their
+ * containers on some browsers, especially Samsung Internet.
+ * overflow-wrap ensures they break onto a new line instead.
+ */
+body {
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+/*
+ * 6. CONSISTENT FONT STACK
+ * ------------------------------------------------------------
+ * If Google Fonts fails to load (network error, ad blocker),
+ * the fallback must be a font with similar metrics to Inter so
+ * text takes up the same space and wraps the same way.
+ * -apple-system/BlinkMacSystemFont closely matches Inter on Apple.
+ * 'Segoe UI' is the closest match on Windows.
+ */
+html, body {
+  font-family:
+    'Inter',
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    system-ui,
+    sans-serif;
+}
+
+/*
+ * 7. PREVENT iOS CALLOUT / SELECTION WEIRDNESS
+ * ------------------------------------------------------------
+ * On iOS Safari, long-pressing elements can trigger a callout
+ * (copy/share menu) that shifts layout and breaks scroll position.
+ * This disables that behavior on interactive UI elements.
+ */
+button, a, [role="button"] {
+  -webkit-touch-callout: none;
+}
+
+/*
+ * 8. CONSISTENT NUMBER RENDERING
+ * ------------------------------------------------------------
+ * By default, numbers in fonts use proportional spacing (each
+ * digit has a different width). Tabular-nums makes all digits
+ * the same width, so badge counts and timers don't shift layout
+ * as numbers change (e.g. "9" → "10" won't push text over).
+ */
+.tabular-nums,
+[data-testid*="count"],
+[data-testid*="badge"],
+time {
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * 9. PREVENT LAYOUT SHIFT FROM SCROLLBAR APPEARANCE
+ * ------------------------------------------------------------
+ * On Windows/Linux, scrollbars take up space and shift the layout
+ * when they appear/disappear. Stable gutter reserves space for them
+ * so content doesn't jump when a list goes from short to long.
+ */
+html {
+  scrollbar-gutter: stable;
+}
+
+/*
+ * 10. PREVENT TOUCH HIGHLIGHT FLASH (Android Chrome)
+ * ------------------------------------------------------------
+ * Android Chrome shows a grey tap highlight on click. On dark
+ * UI this looks like a flicker. Setting to transparent removes it
+ * without disabling tap feedback (we use CSS :active instead).
+ */
+* {
+  -webkit-tap-highlight-color: transparent;
+}

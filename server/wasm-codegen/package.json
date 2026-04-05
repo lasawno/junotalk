@@ -1,0 +1,11 @@
+{
+  "name": "codegen",
+  "version": "0.1.0",
+  "files": [
+    "codegen_bg.wasm",
+    "codegen.js",
+    "codegen.d.ts"
+  ],
+  "main": "codegen.js",
+  "types": "codegen.d.ts"
+}
