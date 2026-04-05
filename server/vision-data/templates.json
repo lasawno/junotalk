@@ -1,0 +1,72 @@
+{
+  "point_translate": {
+    "en": "This is a {word}.",
+    "es": "Esto es un/una {word}.",
+    "fr": "C'est un/une {word}.",
+    "de": "Das ist ein/eine {word}.",
+    "it": "Questo è un/una {word}.",
+    "pt": "Isto é um/uma {word}.",
+    "zh": "这是{word}。",
+    "ja": "これは{word}です。",
+    "ko": "이것은 {word}입니다.",
+    "ar": "هذا/هذه {word}.",
+    "hi": "यह {word} है।",
+    "ru": "Это {word}."
+  },
+  "what_is_this": {
+    "en": "You are looking at a {word}. {category_sentence}",
+    "es": "Estás viendo un/una {word}. {category_sentence}",
+    "fr": "Vous regardez un/une {word}. {category_sentence}",
+    "de": "Sie sehen ein/eine {word}. {category_sentence}",
+    "it": "Stai guardando un/una {word}. {category_sentence}",
+    "pt": "Você está olhando para um/uma {word}. {category_sentence}",
+    "zh": "你看到的是{word}。{category_sentence}",
+    "ja": "あなたが見ているのは{word}です。{category_sentence}",
+    "ko": "당신이 보고 있는 것은 {word}입니다. {category_sentence}",
+    "ar": "أنت تنظر إلى {word}. {category_sentence}",
+    "hi": "आप {word} देख रहे हैं। {category_sentence}",
+    "ru": "Вы смотрите на {word}. {category_sentence}"
+  },
+  "how_do_you_say": {
+    "en": "In {lang_name}, {src_word} is called \"{word}\".",
+    "es": "En {lang_name}, {src_word} se dice \"{word}\".",
+    "fr": "En {lang_name}, {src_word} se dit \"{word}\".",
+    "de": "Auf {lang_name} heißt {src_word} \"{word}\".",
+    "it": "In {lang_name}, {src_word} si dice \"{word}\".",
+    "pt": "Em {lang_name}, {src_word} se diz \"{word}\".",
+    "zh": "在{lang_name}中，{src_word}叫做\"{word}\"。",
+    "ja": "{lang_name}では、{src_word}は\"{word}\"と言います。",
+    "ko": "{lang_name}에서 {src_word}는 \"{word}\"라고 합니다.",
+    "ar": "في {lang_name}، {src_word} تُسمى \"{word}\".",
+    "hi": "{lang_name} में, {src_word} को \"{word}\" कहते हैं।",
+    "ru": "На {lang_name}, {src_word} — это \"{word}\"."
+  },
+  "text_detected": {
+    "en": "I can see the text: \"{text}\". It says \"{word}\" in {lang_name}.",
+    "es": "Puedo ver el texto: \"{text}\". Dice \"{word}\" en {lang_name}.",
+    "fr": "Je vois le texte: \"{text}\". Cela dit \"{word}\" en {lang_name}.",
+    "de": "Ich sehe den Text: \"{text}\". Es heißt \"{word}\" auf {lang_name}.",
+    "it": "Posso vedere il testo: \"{text}\". Dice \"{word}\" in {lang_name}.",
+    "pt": "Posso ver o texto: \"{text}\". Diz \"{word}\" em {lang_name}.",
+    "zh": "我看到文字：\"{text}\"。在{lang_name}中是\"{word}\"。",
+    "ja": "テキストが見えます：\"{text}\"。{lang_name}では\"{word}\"です。",
+    "ko": "텍스트가 보입니다: \"{text}\". {lang_name}로는 \"{word}\"입니다.",
+    "ar": "أرى النص: \"{text}\". يقول \"{word}\" بـ{lang_name}.",
+    "hi": "मैं यह पाठ देख सकता हूँ: \"{text}\"। {lang_name} में यह \"{word}\" है।",
+    "ru": "Я вижу текст: \"{text}\". На {lang_name} это \"{word}\"."
+  },
+  "unknown_object": {
+    "en": "I detected an object but couldn't identify it precisely.",
+    "es": "Detecté un objeto pero no pude identificarlo con precisión.",
+    "fr": "J'ai détecté un objet mais je n'ai pas pu l'identifier précisément.",
+    "de": "Ich habe ein Objekt erkannt, konnte es aber nicht genau identifizieren.",
+    "it": "Ho rilevato un oggetto ma non sono riuscito a identificarlo con precisione.",
+    "pt": "Detectei um objeto mas não consegui identificá-lo com precisão.",
+    "zh": "我检测到了一个物体，但无法精确识别它。",
+    "ja": "物体を検出しましたが、正確に特定できませんでした。",
+    "ko": "물체를 감지했지만 정확하게 식별하지 못했습니다.",
+    "ar": "اكتشفت جسمًا لكن لم أستطع تحديده بدقة.",
+    "hi": "मैंने एक वस्तु का पता लगाया लेकिन इसे सटीक रूप से पहचान नहीं सका।",
+    "ru": "Я обнаружил объект, но не смог точно его идентифицировать."
+  }
+}
