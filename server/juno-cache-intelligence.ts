@@ -50,7 +50,7 @@ export interface CacheDecision {
 }
 
 export interface CacheableRequest {
-  task: "translation" | "translation_prompt" | "chat" | "monitor" | "general";
+  task: "translation" | "translation_prompt" | "chat" | "monitor" | "general" | "background";
   prompt?: string;
   messages?: Array<{ role: string; content: string }>;
   sessionId?: string;
