@@ -20,6 +20,8 @@ jobs:
     name: Ping /health
     runs-on: ubuntu-latest
     timeout-minutes: 3
+    permissions:
+      issues: write
 
     steps:
       - name: Check app health
