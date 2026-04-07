@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { buildAudioProcessor, isSpeechActive, AUDIO_CONSTRAINTS } from "@/lib/audio-processor";
+import type React from "react";
 import { junoSpeak, junoStop, junoUnlock } from "@/lib/audio/junoAudioEngine";
+import { voiceGuard } from "@/lib/audio/voiceGuard";
+import { getSelectedVoice } from "@/lib/audio/voiceStore";
 
 export type JunoListeningState = "listening" | "processing" | "responding";
 
@@ -9,6 +11,7 @@ export interface JunoConversationState {
   listeningState: JunoListeningState;
   currentMessage: string | null;
   isSpeaking: boolean;
+  audioLevelRef: React.MutableRefObject<number>;
 }
 
 export interface JunoConversationHandlers {
@@ -47,8 +50,19 @@ const LANG_NAMES: Record<string, string> = {
   hebrew: "he", thai: "th", vietnamese: "vi",
 };
 
-const CONV_HISTORY_KEY = "juno_conv_history";
+// ── Short-term session history (4-hour TTL) ───────────────────────────────────
+const CONV_HISTORY_KEY    = "juno_conv_history";
 const CONV_HISTORY_TS_KEY = "juno_conv_history_ts";
+
+// ── Long-term persistent memory (7-day TTL) ───────────────────────────────────
+const LONG_MEMORY_KEY    = "juno_long_memory";
+const LONG_MEMORY_TS_KEY = "juno_long_memory_ts";
+const LONG_MEMORY_TTL    = 7 * 24 * 60 * 60 * 1000;
+const LONG_MEMORY_PAIRS  = 4; // store last N exchange pairs
+
+// ── Watchdog ──────────────────────────────────────────────────────────────────
+const WATCHDOG_INTERVAL_MS  = 15_000;
+const WATCHDOG_IDLE_LIMIT_MS = 120_000; // 2 min of no activity → auto-close
 
 function loadHistory(ttlMs: number): { role: string; content: string }[] {
   try {
@@ -60,6 +74,27 @@ function loadHistory(ttlMs: number): { role: string; content: string }[] {
     }
     return JSON.parse(localStorage.getItem(CONV_HISTORY_KEY) || "[]");
   } catch { return []; }
+}
+
+function loadLongMemory(): { role: string; content: string }[] {
+  try {
+    const ts = parseInt(localStorage.getItem(LONG_MEMORY_TS_KEY) || "0", 10);
+    if (Date.now() - ts > LONG_MEMORY_TTL) {
+      localStorage.removeItem(LONG_MEMORY_KEY);
+      localStorage.removeItem(LONG_MEMORY_TS_KEY);
+      return [];
+    }
+    return JSON.parse(localStorage.getItem(LONG_MEMORY_KEY) || "[]");
+  } catch { return []; }
+}
+
+function saveLongMemory(messages: { role: string; content: string }[]): void {
+  if (!messages.length) return;
+  try {
+    const toSave = messages.slice(-(LONG_MEMORY_PAIRS * 2));
+    localStorage.setItem(LONG_MEMORY_KEY, JSON.stringify(toSave));
+    localStorage.setItem(LONG_MEMORY_TS_KEY, String(Date.now()));
+  } catch {}
 }
 
 async function persistSession(
@@ -91,19 +126,36 @@ export function useJunoConversation(
   const [isSpeaking, setIsSpeaking] = useState(false);
 
   // ── Refs ──────────────────────────────────────────────────────────────────
-  const recognitionRef = useRef<any>(null);
-  const audioProcessorDisposeRef = useRef<(() => void) | null>(null);
-  const vadRafRef = useRef<number | null>(null);
-  const convActiveRef = useRef(false);
-  const userLangRef = useRef(userLang || "en");
-  const sessionStartRef = useRef<number>(0);
-  const sessionTypeRef = useRef<"chat" | "voice">("chat");
-  const aiControllerRef = useRef<AbortController | null>(null);
-  const convHistoryRef = useRef<{ role: string; content: string }[]>(loadHistory(cfg.historyTtlMs));
+  const recognitionRef             = useRef<any>(null);
+  const convActiveRef              = useRef(false);
+  const userLangRef                = useRef(userLang || "en");
+  const sessionStartRef            = useRef<number>(0);
+  const sessionTypeRef             = useRef<"chat" | "voice">("chat");
+  const aiControllerRef            = useRef<AbortController | null>(null);
+  const convHistoryRef             = useRef<{ role: string; content: string }[]>(loadHistory(cfg.historyTtlMs));
+  const audioLevelRef              = useRef<number>(0);
+
+  // Watchdog refs
+  const watchdogIntervalRef        = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastActivityRef            = useRef<number>(0);
 
   useEffect(() => {
     if (userLang) userLangRef.current = userLang;
   }, [userLang]);
+
+  // ── Unmount cleanup — stop all async resources; no setState calls here ────
+  useEffect(() => {
+    return () => {
+      convActiveRef.current = false;
+      if (watchdogIntervalRef.current) {
+        clearInterval(watchdogIntervalRef.current);
+        watchdogIntervalRef.current = null;
+      }
+      try { aiControllerRef.current?.abort(); } catch {}
+      try { recognitionRef.current?.abort(); } catch {}
+      junoStop();
+    };
+  }, []);
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -129,28 +181,55 @@ export function useJunoConversation(
     }
   };
 
+  // ── Watchdog: auto-close if idle for too long ─────────────────────────────
+  const startWatchdog = () => {
+    lastActivityRef.current = Date.now();
+    if (watchdogIntervalRef.current) clearInterval(watchdogIntervalRef.current);
+    watchdogIntervalRef.current = setInterval(() => {
+      if (!convActiveRef.current) {
+        clearInterval(watchdogIntervalRef.current!);
+        watchdogIntervalRef.current = null;
+        return;
+      }
+      if (Date.now() - lastActivityRef.current > WATCHDOG_IDLE_LIMIT_MS) {
+        console.log("[Juno] Watchdog: no activity for 2 min — closing session");
+        closeOverlay();
+      }
+    }, WATCHDOG_INTERVAL_MS);
+  };
+
+  const stopWatchdog = () => {
+    if (watchdogIntervalRef.current) {
+      clearInterval(watchdogIntervalRef.current);
+      watchdogIntervalRef.current = null;
+    }
+  };
+
+  const touchActivity = () => { lastActivityRef.current = Date.now(); };
+
   // ── speak: thin UI wrapper around the audio engine ────────────────────────
-  // Sets React state for the overlay animation, then delegates all playback
-  // to junoSpeak() from the dedicated audio engine module.
   const speak = useCallback(async (text: string): Promise<void> => {
     if (!convActiveRef.current) return;
     setCurrentMessage(text);
     setListeningState("responding");
     setIsSpeaking(true);
-    await junoSpeak(text, userLangRef.current);
+    touchActivity();
+    voiceGuard.registerTTS(text);
+    await junoSpeak(text, userLangRef.current, getSelectedVoice());
+    voiceGuard.markTTSEnd();
     setIsSpeaking(false);
+    touchActivity();
   }, []);
 
   // ── Close / teardown ──────────────────────────────────────────────────────
   const closeOverlay = useCallback(() => {
+    voiceGuard.release('home-overlay');
     convActiveRef.current = false;
+    stopWatchdog();
     try { aiControllerRef.current?.abort(); } catch {}
     aiControllerRef.current = null;
     try { recognitionRef.current?.abort(); } catch {}
     recognitionRef.current = null;
-    if (vadRafRef.current) { cancelAnimationFrame(vadRafRef.current); vadRafRef.current = null; }
-    try { audioProcessorDisposeRef.current?.(); } catch {}
-    audioProcessorDisposeRef.current = null;
     junoStop();
     setIsSpeaking(false);
     setCurrentMessage(null);
@@ -163,7 +242,10 @@ export function useJunoConversation(
       : 0;
     const type = sessionTypeRef.current;
     if (msgs.length >= 2) {
+      // Persist full session to server
       persistSession(msgs, type, duration);
+      // Save condensed long-term memory (survives for 7 days)
+      saveLongMemory(msgs);
       saveHistory([]);
     }
     sessionStartRef.current = 0;
@@ -186,7 +268,11 @@ export function useJunoConversation(
         for (let i = e.resultIndex; i < e.results.length; i++) {
           if (e.results[i].isFinal) {
             const t = e.results[i][0].transcript.trim();
-            if (t) { got = true; rec.stop(); resolve(t); }
+            if (t) {
+              // Echo suppression — discard transcripts that closely match recent TTS
+              if (voiceGuard.isEcho(t)) { rec.stop(); resolve(null); return; }
+              got = true; rec.stop(); touchActivity(); resolve(t);
+            }
           }
         }
       };
@@ -235,33 +321,11 @@ export function useJunoConversation(
       } catch { return null; }
     };
 
-    // Greeting
-    try {
-      const greetRes = await fetch(cfg.aiEndpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          text: "__juno_open__",
-          sourceLang: userLangRef.current,
-          targetLang: userLangRef.current,
-          conversationHistory: [],
-          voiceMode: false,
-        }),
-      });
-      if (greetRes.ok && convActiveRef.current) {
-        const gd = await greetRes.json();
-        const greetMsg = (gd.translatedText || gd.message || "").trim();
-        if (greetMsg && convActiveRef.current) await speak(greetMsg);
-      }
-    } catch {}
-
     // Conversation loop
     while (convActiveRef.current) {
       const userText = await listen();
       if (!convActiveRef.current) break;
       if (!userText) continue;
-      // Show the user's own transcribed speech as a caption before Juno replies
       setCurrentMessage(userText);
       const reply = await askJuno(userText);
       if (!convActiveRef.current) break;
@@ -272,37 +336,29 @@ export function useJunoConversation(
     if (convActiveRef.current) closeOverlay();
   }, [closeOverlay, speak]);
 
-  // ── VAD setup ─────────────────────────────────────────────────────────────
-  const startVAD = async () => {
-    try {
-      const rawStream = await navigator.mediaDevices.getUserMedia({
-        audio: AUDIO_CONSTRAINTS,
-        video: false,
-      });
-      const processor = await buildAudioProcessor(rawStream);
-      audioProcessorDisposeRef.current = processor.dispose;
-      const analyser = processor.analyserNode;
-      const tick = () => {
-        if (!audioProcessorDisposeRef.current) return;
-        setIsSpeaking(isSpeechActive(analyser));
-        vadRafRef.current = requestAnimationFrame(tick);
-      };
-      vadRafRef.current = requestAnimationFrame(tick);
-    } catch {}
-  };
-
   // ── Public handlers ───────────────────────────────────────────────────────
 
   const handleMicTap = useCallback(async () => {
     if (showOverlay) { closeOverlay(); return; }
     await junoUnlock();
+
+    // Claim the guard — force-stops any active session on another page (e.g. voice-page)
+    const claimed = await voiceGuard.claim('home-overlay', closeOverlay);
+    if (!claimed) return; // mic permission denied — guard already logged the reason
     setCurrentMessage(null);
     setListeningState("listening");
     setShowOverlay(true);
     convActiveRef.current = true;
     sessionTypeRef.current = "voice";
     sessionStartRef.current = Date.now();
-    await startVAD();
+
+    // Seed short-term history with long-term memory so Juno remembers past context
+    const longMemory = loadLongMemory();
+    if (longMemory.length > 0) {
+      convHistoryRef.current = longMemory;
+    }
+
+    startWatchdog();
     runConversation();
   }, [showOverlay, closeOverlay, runConversation]);
 
@@ -355,7 +411,7 @@ export function useJunoConversation(
   }, [closeOverlay, speak]);
 
   return [
-    { showOverlay, listeningState, currentMessage, isSpeaking },
+    { showOverlay, listeningState, currentMessage, isSpeaking, audioLevelRef },
     { handleMicTap, handleTextSubmit, closeOverlay },
   ];
 }

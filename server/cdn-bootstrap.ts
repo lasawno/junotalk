@@ -22,6 +22,7 @@
 
 import { fetchPrivateFile, pushPrivateFile } from "./github-config";
 import { IMAGE_CONFIG_CDN_PATH, IMAGE_CONFIG_DEFAULT } from "./image-config";
+import { JUNO_MONITOR_CDN_PATH, JUNO_MONITOR_DEFAULT } from "./juno-monitor";
 
 // ── Default payloads (mirrors each module's DEFAULT_CONFIG) ────────────────────
 // Kept here so bootstrap doesn't need to import the full modules.
@@ -276,6 +277,11 @@ const BOOTSTRAP_CONFIGS: Array<{
     path: IMAGE_CONFIG_CDN_PATH,
     label: "Image Generation Config",
     payload: IMAGE_CONFIG_DEFAULT as unknown as Record<string, unknown>,
+  },
+  {
+    path: JUNO_MONITOR_CDN_PATH,
+    label: "Juno Monitor",
+    payload: JUNO_MONITOR_DEFAULT as unknown as Record<string, unknown>,
   },
 ];
 

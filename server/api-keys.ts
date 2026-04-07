@@ -51,6 +51,9 @@ async function loadFromGitHub(): Promise<void> {
     }
   } catch (err: any) {
     console.warn(`[ApiKeys] GitHub CDN unavailable: ${err.message} — using env fallback`);
+    // Mark as "loaded" even on failure so we don't retry on every voice request.
+    // Next refresh attempt will happen after TTL_MS.
+    if (!_loadedAt) _loadedAt = Date.now();
   }
 }
 

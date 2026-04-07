@@ -14,6 +14,7 @@
  *   • anthropics/anthropic-cookbook    — Claude AI techniques
  *   • brexhq/prompt-engineering        — real-world AI prompt patterns
  *   • trimstray/the-book-of-secret-knowledge — factual tech knowledge base
+ *   • Hannibal046/Awesome-LLM             — curated LLM knowledge base
  *
  * Storage:
  *   • Knowledge-Base-Integration repo  (domain/ai-learnings-<date>.json)
@@ -92,6 +93,13 @@ const LEARNING_SOURCES: LearningSource[] = [
     file: "README.md",
     category: "domain",
     topic: "Curated factual technical knowledge compiled by the community",
+  },
+  {
+    id: "awesome-llm",
+    repo: "Hannibal046/Awesome-LLM",
+    file: "README.md",
+    category: "domain",
+    topic: "Comprehensive curated knowledge base on large language models, capabilities, research, and real-world applications",
   },
 ];
 

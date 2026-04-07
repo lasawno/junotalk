@@ -593,7 +593,7 @@ export async function precomputeTranslationEmbeddings(
         const result = await db.execute(sql`
           SELECT id FROM translation_embeddings
           WHERE source_lang = ${p.src} AND target_lang = ${p.tgt}
-            AND source_text = ${p.sourceText} AND embedding IS NOT NULL
+            AND source_text = ${p.sourceText}
           LIMIT 1
         `);
         return result.rows.length > 0;

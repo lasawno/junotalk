@@ -39,7 +39,10 @@ const VOICE_REGISTRY: Record<string, PiperVoiceConfig> = {
   vi: { lang: "vi", model: "vi_VN-vivos-x_low", quality: "x_low", files: { onnx: "vi/vi_VN/vivos/x_low/vi_VN-vivos-x_low.onnx", json: "vi/vi_VN/vivos/x_low/vi_VN-vivos-x_low.onnx.json" } },
 };
 
-const OPENAI_ONLY_LANGS = new Set(["zh", "ja", "ko", "ar", "hi", "th", "he", "fa", "bn", "ta", "ur"]);
+// All languages use OpenAI TTS exclusively — Piper is disabled system-wide.
+// OpenAI TTS is natural and non-robotic; Piper is kept here only for reference
+// but shouldUsePiper() always returns false.
+const OPENAI_ONLY_LANGS = new Set(Object.keys(VOICE_REGISTRY).concat(["en", "zh", "ja", "ko", "ar", "hi", "th", "he", "fa", "bn", "ta", "ur"]));
 
 const downloadInProgress = new Set<string>();
 const availableModels = new Set<string>();
@@ -110,9 +113,9 @@ async function downloadModel(lang: string): Promise<boolean> {
   }
 }
 
-export function shouldUsePiper(lang: string): boolean {
-  if (OPENAI_ONLY_LANGS.has(lang)) return false;
-  return VOICE_REGISTRY[lang] !== undefined;
+export function shouldUsePiper(_lang: string): boolean {
+  // Piper disabled system-wide — all TTS goes through OpenAI
+  return false;
 }
 
 export function isPiperModelReady(lang: string): boolean {

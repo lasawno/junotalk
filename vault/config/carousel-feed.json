@@ -1,0 +1,26 @@
+{
+  "_comment": "Upload this file to lasawno/junotalk-cdn at config/carousel-feed.json. Edit labels, platforms, and videoIds to control what appears in the dashboard carousel. Supported platforms: youtube, vimeo, dailymotion. Supported themes: blue-red, teal, green, orange, orange-dark, purple, purple-light.",
+  "categories": ["Trending", "Entertainment", "Sports", "News", "Music"],
+  "cards": {
+    "Trending": [
+      { "label": "Trending Video", "platform": "youtube", "videoId": "tgbNymZ7vqY", "theme": "blue-red" },
+      { "label": "Hot Right Now", "platform": "vimeo", "videoId": "76979871", "theme": "teal" }
+    ],
+    "Entertainment": [
+      { "label": "Entertainment", "platform": "vimeo", "videoId": "76979871", "theme": "teal" },
+      { "label": "Viral Clips", "platform": "youtube", "videoId": "tgbNymZ7vqY", "theme": "blue-red" }
+    ],
+    "Sports": [
+      { "label": "Sports Highlights", "platform": "vimeo", "videoId": "148751763", "theme": "green" },
+      { "label": "Live Sports", "platform": "dailymotion", "videoId": "x7tgd4t", "theme": "green" }
+    ],
+    "News": [
+      { "label": "Breaking News", "platform": "dailymotion", "videoId": "x7tgd4t", "theme": "orange" },
+      { "label": "World News", "platform": "youtube", "videoId": "tgbNymZ7vqY", "theme": "orange-dark" }
+    ],
+    "Music": [
+      { "label": "Music Videos", "platform": "youtube", "videoId": "tgbNymZ7vqY", "theme": "purple" },
+      { "label": "Top Hits", "platform": "vimeo", "videoId": "76979871", "theme": "purple-light" }
+    ]
+  }
+}

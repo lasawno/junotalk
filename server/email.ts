@@ -285,10 +285,11 @@ export async function sendVerificationEmail(email: string, firstName: string, co
       html: getVerifyEmailHtml(firstName, code),
       text: `Hi ${firstName},\n\nYour JunoTalk verification code is: ${code}\n\nIt expires in 10 minutes. If you didn't request this, you can ignore this email.\n\n— The JunoTalk Team`,
     });
-    if (error) { console.error("[Email] Verification email failed:", error); return false; }
+    if (error) { console.error("[Email] Verification email failed:", error.name, error.message); return false; }
     return true;
   } catch (err) {
-    console.error("[Email] Verification email error:", err);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[Email] Verification email error:", msg);
     return false;
   }
 }
@@ -308,13 +309,14 @@ export async function sendWelcomeEmail(email: string, firstName: string): Promis
     });
 
     if (error) {
-      console.error("[Email] Failed to send welcome email:", error);
+      console.error("[Email] Failed to send welcome email:", error.name, error.message);
       return false;
     }
 
     return true;
   } catch (error) {
-    console.error("[Email] Error sending welcome email:", error);
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error("[Email] Error sending welcome email:", msg);
     return false;
   }
 }

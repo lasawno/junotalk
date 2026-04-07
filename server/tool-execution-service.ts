@@ -237,6 +237,7 @@ export const TOOL_NAMES = {
   OPENAI_TRANSLATE: "openai-translate",
   VISION_DETECT: "vision-detect",
   TTS_PIPER: "tts-piper",
+  TTS_EDGE: "tts-edge",
   TTS_OPENAI: "tts-openai",
   CAPTION_CLEANUP: "caption-cleanup",
   CALL_SUMMARY: "call-summary",

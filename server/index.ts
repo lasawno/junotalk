@@ -10,6 +10,7 @@ import { getIO } from "./socket-io";
 import { createServer } from "http";
 import { seedDatabase } from "./seed";
 import { startPiperTTS, stopPiperTTS } from "./start-piper";
+import { startEdgeTTS, ensureEdgeTTSStarted } from "./start-edge-tts";
 import { initEmbeddingService } from "./embedding-service";
 import { supabaseStorageService } from "./supabase-storage";
 import { initProjectState } from "./project-state";
@@ -111,6 +112,54 @@ const CSP_HEADER = "default-src 'self' https: http:; " +
   "object-src 'none'; " +
   "base-uri 'self';";
 
+// ── Chrome Extension CORS ────────────────────────────────────────────────────
+// Allow Juno's Chrome extension to call the API from chrome-extension:// origin.
+app.use((req, res, next) => {
+  const origin = req.headers.origin || "";
+  if (req.path.startsWith("/api/") && /^chrome-extension:\/\//.test(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Juno-Device");
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    if (req.method === "OPTIONS") return res.status(204).end();
+  }
+  next();
+});
+
+// ── Extension device token rate limiter ───────────────────────────────────────
+// Limits chrome extension device tokens to 120 requests per hour.
+// This prevents scraping/abuse without requiring authentication.
+const _deviceBuckets = new Map<string, { count: number; resetAt: number }>();
+const DEVICE_LIMIT_PER_HOUR = 120;
+
+app.use((req, res, next) => {
+  const deviceId = req.headers["x-juno-device"] as string | undefined;
+  if (!deviceId) return next();
+
+  const validFormat = /^[a-f0-9-]{36,64}$/.test(deviceId);
+  if (!validFormat) {
+    return res.status(400).json({ message: "Invalid device header" });
+  }
+
+  const now = Date.now();
+  let bucket = _deviceBuckets.get(deviceId);
+
+  if (!bucket || now >= bucket.resetAt) {
+    bucket = { count: 0, resetAt: now + 3600_000 };
+    _deviceBuckets.set(deviceId, bucket);
+  }
+
+  bucket.count++;
+
+  if (bucket.count > DEVICE_LIMIT_PER_HOUR) {
+    const retryAfter = Math.ceil((bucket.resetAt - now) / 1000);
+    res.setHeader("Retry-After", String(retryAfter));
+    return res.status(429).json({ message: "Rate limit reached. Try again later." });
+  }
+
+  next();
+});
+
 app.use((req, res, next) => {
   if (req.path.startsWith("/assets/")) return next();
 
@@ -201,6 +250,9 @@ app.use((req, res, next) => {
 
 (async () => {
   startPiperTTS();
+  startEdgeTTS();
+  // Start edge-tts eagerly so it's ready for the first voice request
+  setTimeout(() => ensureEdgeTTSStarted(), 2000);
 
   initProjectState().catch((err: any) => {
     console.warn("[Startup] ProjectState init failed (non-fatal):", err?.message);
@@ -253,6 +305,13 @@ app.use((req, res, next) => {
     startWeeklyArchiveScheduler();
   }).catch(() => {});
 
+  // ── Voice Tuning Agent — runs parallel with every voice surface ───────────
+  // Monitors all TTS calls (Juno overlay + voice-translate + any future surface),
+  // auto-tunes styledegree/break timings every 30 min, pushes winning config to CDN.
+  import("./voice-tuning-agent").then(({ startVoiceTuningAgent }) => {
+    startVoiceTuningAgent();
+  }).catch(() => {});
+
   // ── CDN Bootstrap — runs once at startup ──────────────────────────────────
   // Autonomously creates any missing config files on the CDN using default values.
   // If files already exist, leaves them untouched. Falls back to hardcoded
@@ -264,6 +323,10 @@ app.use((req, res, next) => {
   // Load image generation config from CDN (ai-images/config.json).
   import("./image-config").then(({ loadImageConfig }) => {
     loadImageConfig().catch(() => {});
+  }).catch(() => {});
+
+  import("./juno-monitor").then(({ loadMonitorConfig }) => {
+    loadMonitorConfig().catch(() => {});
   }).catch(() => {});
 
   // Autonomous learner — pulls from open-source AI repos every 24h.

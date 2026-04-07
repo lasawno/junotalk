@@ -1,0 +1,22 @@
+{
+  "_comment": "Client config defaults — mirrored to lasawno/junotalk-cdn at config/client-config.json by GitHub Actions on every push to main. Edit here, not directly on the CDN.",
+  "socket_chat_reconnect_delay_ms": 1000,
+  "socket_chat_reconnect_delay_max_ms": 15000,
+  "socket_chat_timeout_ms": 10000,
+  "socket_dm_reconnect_delay_ms": 1000,
+  "socket_dm_reconnect_delay_max_ms": 8000,
+  "socket_dm_reconnect_attempts": 15,
+  "socket_dm_timeout_ms": 10000,
+  "ws_heartbeat_interval_ms": 15000,
+  "ws_heartbeat_timeout_ms": 10000,
+  "ws_reconnect_initial_delay_ms": 1000,
+  "ws_reconnect_max_delay_ms": 15000,
+  "upload_max_mb_mobile": 15,
+  "upload_max_mb_desktop": 25,
+  "toast_duration_ms": 3500,
+  "toast_error_duration_ms": 5000,
+  "contacts_refetch_interval_ms": 30000,
+  "feature_flags_refetch_interval_ms": 300000,
+  "query_default_stale_time_ms": 30000,
+  "query_default_retry_max_delay_ms": 8000
+}

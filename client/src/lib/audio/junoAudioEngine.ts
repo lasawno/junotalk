@@ -3,15 +3,19 @@
  * Main entry point for all Juno audio output.
  *
  * Usage:
- *   junoUnlock()   — call inside user gesture to pre-approve audio
- *   junoSpeak(text, lang?) — fetch TTS and play
- *   junoStop()     — cancel current playback
+ *   junoUnlock()              — call inside a tap handler to unlock audio
+ *   junoSpeak(text, lang?)    — fetch TTS and play using adaptive engine
+ *   junoStop()                — cancel current playback
+ *
+ * The adaptive engine (adaptiveTTS) monitors EdgeTTS response latency and
+ * automatically falls back to the browser's built-in SpeechSynthesis when
+ * the server is slow, then recovers silently when EdgeTTS is fast again.
+ * The user's calibrated speed setting is always honoured regardless of source.
  */
 
 import { unlockAudioContext } from "./audioContext";
-import { queuePlay, stopAll } from "./audioQueue";
-
-const TTS_ENDPOINT = "/api/v1/tts";
+import { getSelectedVoice } from "./voiceStore";
+import { adaptiveTTS } from "./adaptiveTTS";
 
 /**
  * Call this synchronously inside a tap/click handler to unlock audio
@@ -25,47 +29,27 @@ export async function junoUnlock(): Promise<void> {
  * Stop whatever Juno is currently saying.
  */
 export function junoStop(): void {
-  stopAll();
+  adaptiveTTS.stop();
 }
 
 /**
- * Fetch TTS audio for `text` and play it through the audio engine.
- * Cancels any currently playing audio before starting.
+ * Fetch TTS audio for `text` and play it through the adaptive audio engine.
+ * Automatically falls back to browser SpeechSynthesis if the server is slow,
+ * and recovers to EdgeTTS as soon as latency improves.
  *
- * @param text  The text Juno should speak.
- * @param lang  BCP-47 language code (e.g. "en", "es", "fr"). Defaults to "en".
+ * @param text   The text Juno should speak.
+ * @param lang   Language code (e.g. "en", "es", "fr"). Defaults to "en".
+ * @param voice  OpenAI voice ID. Defaults to the user's selected voice.
  */
-export async function junoSpeak(text: string, lang = "en"): Promise<void> {
+export async function junoSpeak(text: string, lang = "en", voice?: string): Promise<void> {
   if (!text.trim()) return;
 
-  console.log("[JunoAudio] junoSpeak() →", text.slice(0, 80));
+  const resolvedVoice = voice || getSelectedVoice();
+  console.log(
+    "[JunoAudio] junoSpeak() →",
+    text.slice(0, 80),
+    `| voice: ${resolvedVoice} | lang: ${lang} | engine-health: ${adaptiveTTS.health}`,
+  );
 
-  let buf: ArrayBuffer;
-  try {
-    const res = await fetch(TTS_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ text, voice: "nova", lang }),
-    });
-
-    console.log("[JunoAudio] TTS status:", res.status);
-
-    if (!res.ok) {
-      console.error("[JunoAudio] TTS request failed:", res.status, res.statusText);
-      return;
-    }
-
-    buf = await res.arrayBuffer();
-    if (!buf.byteLength) {
-      console.error("[JunoAudio] TTS returned empty buffer");
-      return;
-    }
-  } catch (e) {
-    console.error("[JunoAudio] TTS fetch error:", e);
-    return;
-  }
-
-  await queuePlay(buf);
-  console.log("[JunoAudio] Playback complete");
+  await adaptiveTTS.speak(text, lang, resolvedVoice);
 }

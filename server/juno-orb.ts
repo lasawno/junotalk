@@ -32,10 +32,11 @@
  *  PROVIDER CHAIN (short-circuits on first success)
  *  L0   Knowledge base   — static Q&A with confidence threshold (≥ 0.6)
  *  L0.5 Lite model       — CDN-configured Gemma 3 1B via OpenRouter (default 25% of requests)
- *  L1   Kimi / Moonshot  — primary AI responder (remaining 75%, or fallback from L0.5)
- *  L2   Claude Haiku     — fallback if Kimi fails or is throttled
- *  L3   Offline responder — zero-network pattern-based handler for basic prompts
- *  L4   Hardcoded reply  — last-resort graceful degradation
+ *  L1   Gemma 4 (27B)    — primary AI responder via Gemini API free tier (open-source)
+ *  L2   Kimi / Moonshot  — fallback if Gemma 4 unavailable
+ *  L3   Claude Haiku     — fallback if Kimi fails or is throttled
+ *  L4   Offline responder — zero-network pattern-based handler for basic prompts
+ *  L5   Hardcoded reply  — last-resort graceful degradation
  *
  *  UPGRADE PATH
  *  V1 → V2: Add persistent session storage (Redis/DB)
@@ -388,7 +389,46 @@ export async function askOrb(
     }
   }
 
-  // L1 — Kimi / Moonshot (primary, handles remaining 90% + OpenRouter fallover)
+  // L1 — Gemma 4 (primary — open-source, free via Gemini API)
+  const geminiKey = apiKeys.gemini();
+  if (geminiKey && !deps.shouldThrottleProvider("gemini")) {
+    try {
+      const { GoogleGenerativeAI } = await import("@google/generative-ai");
+      const genAI = new GoogleGenerativeAI(geminiKey);
+      const gemmaModel = genAI.getGenerativeModel({
+        model: "gemma-4-27b-it",
+        systemInstruction: systemPrompt,
+      });
+      const gemmaHistory = messageHistory.slice(0, -1).map(m => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }],
+      }));
+      const chat = gemmaModel.startChat({ history: gemmaHistory });
+      const lastMsg = messageHistory[messageHistory.length - 1]?.content || message;
+      const gemmaRes = await chat.sendMessage(lastMsg);
+      const rawGemmaReply = gemmaRes.response?.text()?.trim() || "";
+      const reply = filterOrbOutput(rawGemmaReply);
+      if (reply) {
+        const usage = gemmaRes.response?.usageMetadata;
+        if (usage) deps.trackTokenUsage("gemini", usage.promptTokenCount || 0, usage.candidatesTokenCount || 0, "orb_chat_gemma4");
+        appendToSession(session, "user", message);
+        appendToSession(session, "assistant", reply);
+        console.log(`[${ORB_VERSION}] Gemma 4 response (turn ${session.turnCount}, systems: ${orchestrated.systemsHit.join(",")}) for user ${userId}`);
+        return {
+          reply,
+          version: ORB_VERSION,
+          provider: "gemma4",
+          sessionTurns: session.turnCount,
+          recallSource: orchestrated.systemsHit.join(","),
+          fromKnowledge: false,
+        };
+      }
+    } catch (err: any) {
+      console.warn(`[${ORB_VERSION}] Gemma 4 failed, falling through to Kimi:`, err.message);
+    }
+  }
+
+  // L2 — Kimi / Moonshot (fallback if Gemma 4 unavailable)
   if (apiKeys.moonshot() && !deps.shouldThrottleProvider("kimi")) {
     try {
       const kimiMessages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [

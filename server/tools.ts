@@ -179,6 +179,50 @@ export async function toolVisionDetect(
   return result.data;
 }
 
+export async function toolEdgeTTS(
+  text: string,
+  voice: string,
+  lang: string,
+  speed: number,
+  styledegree: number = 1.8
+): Promise<{ buffer: Buffer; contentType: string } | null> {
+  const { ensureEdgeTTSStarted, isEdgeTTSReady, getEdgeTTSPort } = await import("./start-edge-tts");
+  ensureEdgeTTSStarted();
+
+  // Wait up to 8 s for the sidecar to come up (first cold start)
+  if (!isEdgeTTSReady()) {
+    for (let i = 0; i < 16; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      if (isEdgeTTSReady()) break;
+    }
+  }
+  if (!isEdgeTTSReady()) return null;
+
+  const port = getEdgeTTSPort();
+
+  const result = await executeTool(
+    TOOL_NAMES.TTS_EDGE,
+    async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/synthesize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, voice, lang, speed, styledegree }),
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!res.ok) throw new Error(`EdgeTTS returned ${res.status}`);
+      const buffer = Buffer.from(await res.arrayBuffer());
+      if (buffer.length === 0) throw new Error("EdgeTTS returned empty audio");
+      return { buffer, contentType: "audio/mpeg" };
+    },
+    {
+      maxRetries: 1,
+      timeoutMs: 25000,
+      fallback: () => null,
+    }
+  );
+  return result.data;
+}
+
 export async function toolPiperTTS(
   text: string,
   port?: string,
@@ -221,9 +265,18 @@ export async function toolOpenAITTS(
   const result = await executeTool(
     TOOL_NAMES.TTS_OPENAI,
     async () => {
-      const openaiKey = process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
-      const openaiBase = process.env.AI_INTEGRATIONS_OPENAI_BASE_URL || "https://api.openai.com/v1";
-      if (!openaiKey) throw new Error("OpenAI TTS not configured");
+      // Use a real CDN key when available; otherwise route through the Replit proxy.
+      const { apiKeys } = await import("./api-keys");
+      const realKey = apiKeys.openai();
+      const hasRealKey = !!realKey && !realKey.startsWith("_DUMMY_");
+
+      // The Replit proxy (localhost:1106) handles auth internally — any non-empty key works.
+      const baseURL = hasRealKey
+        ? "https://api.openai.com/v1"
+        : "http://localhost:1106/modelfarm/openai";
+      const openaiKey = hasRealKey
+        ? realKey
+        : (process.env.AI_INTEGRATIONS_OPENAI_API_KEY || "replit-proxy");
 
       const langHints: Record<string, string> = {
         es: "[Spanish]", fr: "[French]", de: "[German]", it: "[Italian]",
@@ -235,7 +288,7 @@ export async function toolOpenAITTS(
       };
       const hint = lang && lang !== "en" && langHints[lang] ? langHints[lang] + " " : "";
 
-      const ttsClient = new OpenAI({ apiKey: openaiKey, baseURL: openaiBase });
+      const ttsClient = new OpenAI({ apiKey: openaiKey, baseURL });
       const mp3 = await ttsClient.audio.speech.create({
         model: "tts-1",
         voice: voice as any,

@@ -234,6 +234,80 @@ export function fireReturnNotification(platformId: string, platformName: string)
   } catch { /* unsupported */ }
 }
 
+// ─── Privacy utilities ────────────────────────────────────────────────────────
+
+/** Tracking query parameters stripped before any URL loads in Juno Browser. */
+const TRACKING_PARAMS = [
+  "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+  "utm_id", "utm_creative", "utm_device", "utm_placement",
+  "fbclid", "gclid", "gclsrc", "dclid", "msclkid", "twclid", "ttclid",
+  "mc_cid", "mc_eid", "_ga", "_gl", "igshid", "srsltid", "si", "yclid",
+  "zanpid", "ref", "referrer", "source", "affiliate",
+];
+
+/** Search hostnames that get redirected to DuckDuckGo for private search. */
+const SEARCH_HOSTS: Record<string, string> = {
+  "www.google.com":  "q",
+  "google.com":      "q",
+  "www.bing.com":    "q",
+  "bing.com":        "q",
+  "search.yahoo.com": "p",
+  "www.yahoo.com":   "p",
+};
+
+/**
+ * Strips known tracking/analytics parameters from a URL.
+ * Returns the cleaned URL and how many params were removed.
+ */
+export function stripTrackingParams(url: string): { url: string; removed: number } {
+  try {
+    const u = new URL(url);
+    let removed = 0;
+    TRACKING_PARAMS.forEach(p => {
+      if (u.searchParams.has(p)) { u.searchParams.delete(p); removed++; }
+    });
+    return { url: u.toString(), removed };
+  } catch {
+    return { url, removed: 0 };
+  }
+}
+
+/**
+ * If the URL is a Google/Bing/Yahoo search, converts it to a DuckDuckGo
+ * search for the same query. Otherwise returns the URL unchanged.
+ */
+export function toPrivateSearch(url: string): { url: string; wasRedirected: boolean } {
+  try {
+    const u = new URL(url);
+    const qParam = SEARCH_HOSTS[u.hostname];
+    if (!qParam) return { url, wasRedirected: false };
+    const query = u.searchParams.get(qParam);
+    if (!query) return { url, wasRedirected: false };
+    return {
+      url: `https://duckduckgo.com/?q=${encodeURIComponent(query)}&ko=-1&kp=-1&k1=-1`,
+      wasRedirected: true,
+    };
+  } catch {
+    return { url, wasRedirected: false };
+  }
+}
+
+/**
+ * Full privacy pass for any URL entering Juno Browser:
+ *   1. Redirect search engines → DuckDuckGo
+ *   2. Strip tracking parameters
+ * Returns the sanitised URL plus a summary for the UI badge.
+ */
+export function sanitizeForJunoBrowser(rawUrl: string): {
+  url: string;
+  trackersRemoved: number;
+  searchRedirected: boolean;
+} {
+  const { url: searchUrl, wasRedirected } = toPrivateSearch(rawUrl);
+  const { url: cleanUrl, removed } = stripTrackingParams(searchUrl);
+  return { url: cleanUrl, trackersRemoved: removed, searchRedirected: wasRedirected };
+}
+
 // ─── Return detection ─────────────────────────────────────────────────────────
 
 /**

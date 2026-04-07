@@ -56,6 +56,8 @@ import {
   visionScans,
   type VoiceProfile,
   type InsertVoiceProfile,
+  type ConversationSession,
+  conversationSessions,
 } from "@shared/schema";
 import { users, sessions } from "@shared/models/auth";
 import { db } from "./db";
@@ -115,6 +117,12 @@ export interface IStorage {
   getAllFeedback(): Promise<Feedback[]>;
   createFeedback(data: InsertFeedback): Promise<Feedback>;
   updateFeedbackStatus(id: string, status: string, aiReview?: string): Promise<Feedback | null>;
+
+  // Conversation History
+  getHistory(userId: string, limit?: number): Promise<ConversationSession[]>;
+  upsertSession(userId: string, data: { sessionId: string; title: string; mode: string; messages: unknown[] }): Promise<ConversationSession>;
+  deleteSession(userId: string, sessionId: string): Promise<void>;
+  clearHistory(userId: string): Promise<void>;
 
   // Support Tickets
   createSupportTicket(data: InsertSupportTicket): Promise<SupportTicket>;
@@ -1277,6 +1285,48 @@ export class DatabaseStorage implements IStorage {
       .where(ilike(visionScans.label, `%${query}%`))
       .orderBy(desc(visionScans.scannedAt))
       .limit(limit);
+  }
+
+  // ── Conversation History ────────────────────────────────────────────────────
+  async getHistory(userId: string, limit = 200): Promise<ConversationSession[]> {
+    return db.select().from(conversationSessions)
+      .where(eq(conversationSessions.userId, userId))
+      .orderBy(desc(conversationSessions.updatedAt))
+      .limit(limit);
+  }
+
+  async upsertSession(userId: string, data: { sessionId: string; title: string; mode: string; messages: unknown[] }): Promise<ConversationSession> {
+    const now = new Date();
+    const [row] = await db.insert(conversationSessions).values({
+      userId,
+      sessionId: data.sessionId,
+      title: data.title,
+      mode: data.mode,
+      messages: data.messages as any,
+      createdAt: now,
+      updatedAt: now,
+    }).onConflictDoUpdate({
+      target: conversationSessions.sessionId,
+      set: {
+        title: data.title,
+        messages: data.messages as any,
+        updatedAt: now,
+      },
+    }).returning();
+    return row;
+  }
+
+  async deleteSession(userId: string, sessionId: string): Promise<void> {
+    await db.delete(conversationSessions)
+      .where(and(
+        eq(conversationSessions.userId, userId),
+        eq(conversationSessions.sessionId, sessionId),
+      ));
+  }
+
+  async clearHistory(userId: string): Promise<void> {
+    await db.delete(conversationSessions)
+      .where(eq(conversationSessions.userId, userId));
   }
 
 }

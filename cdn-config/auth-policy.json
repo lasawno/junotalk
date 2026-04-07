@@ -1,0 +1,7 @@
+{
+  "_comment": "Auth policy defaults — mirrored to lasawno/junotalk-cdn at config/auth-policy.json by GitHub Actions on every push to main. Edit here, not directly on the CDN.",
+  "null_tolerance": 8,
+  "visibility_logout_enabled": false,
+  "visibility_logout_delay_ms": 1800000,
+  "auth_refetch_interval_ms": 600000
+}

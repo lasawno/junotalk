@@ -1,0 +1,143 @@
+{
+  "summary": {
+    "total": 18,
+    "passed": 18,
+    "failed": 0,
+    "totalMs": 22121
+  },
+  "results": [
+    {
+      "name": "Coffee cup → Spanish",
+      "passed": true,
+      "latencyMs": 1198,
+      "engine": "hub",
+      "label": "cup of coffee",
+      "translation": "taza de café",
+      "sentence": "¿Te gustaría tomar una taza de café conmigo?"
+    },
+    {
+      "name": "Dog photo → French",
+      "passed": true,
+      "latencyMs": 749,
+      "engine": "hub",
+      "label": "dog",
+      "translation": "chien",
+      "sentence": "Cet animal est un chien de race Labrador."
+    },
+    {
+      "name": "Cat photo → Japanese",
+      "passed": true,
+      "latencyMs": 809,
+      "engine": "hub",
+      "label": "Cat",
+      "translation": "ネコ",
+      "sentence": "ネコは可愛らしい動物です。"
+    },
+    {
+      "name": "VQA: What color?",
+      "passed": true,
+      "latencyMs": 814,
+      "engine": "hub",
+      "label": "Dog",
+      "translation": "Perro",
+      "sentence": "El animal en la imagen es un perro de color amarillo dorado.",
+      "answer": "The animal in the image is a golden yellow dog."
+    },
+    {
+      "name": "VQA: What is this?",
+      "passed": true,
+      "latencyMs": 1296,
+      "engine": "hub",
+      "label": "coffee cup",
+      "translation": "tasse de café",
+      "sentence": "Ceci est une tasse de café remplie d'un liquide brun foncé.",
+      "answer": "This is a coffee cup filled with a dark brown liquid."
+    },
+    {
+      "name": "→ Spanish",
+      "passed": true,
+      "latencyMs": 858,
+      "engine": "hub",
+      "label": "Labrador Retriever",
+      "translation": "Labrador Retriever",
+      "sentence": "El Labrador Retriever es una raza de perro popular y amigable."
+    },
+    {
+      "name": "→ French",
+      "passed": true,
+      "latencyMs": 772,
+      "engine": "hub",
+      "label": "Dog",
+      "translation": "Chien",
+      "sentence": "C'est un beau chien dans un champ d'herbe verte."
+    },
+    {
+      "name": "→ German",
+      "passed": true,
+      "latencyMs": 1514,
+      "engine": "hub",
+      "label": "Dog",
+      "translation": "Hund",
+      "sentence": "Der Hund ist ein treuer Begleiter."
+    },
+    {
+      "name": "→ Japanese",
+      "passed": true,
+      "latencyMs": 1169,
+      "engine": "hub",
+      "label": "Labrador Retriever dog",
+      "translation": "ラブラドール・レトリーバー",
+      "sentence": "ラブラドール・レトリーバーは忠実な性格で、家族向けの人気の高いペットです。"
+    },
+    {
+      "name": "→ Portuguese",
+      "passed": true,
+      "latencyMs": 1105,
+      "engine": "hub",
+      "label": "Labrador retriever",
+      "translation": "Labrador retriever",
+      "sentence": "Este labrador retriever parece estar em um ambiente externo, em uma área gramada."
+    },
+    {
+      "name": "→ Arabic",
+      "passed": true,
+      "latencyMs": 1073,
+      "engine": "hub",
+      "label": "Labrador Retriever",
+      "translation": "مَضرَعَة",
+      "sentence": "هذه كلبة المضرَعَة جميلة وأليفة."
+    },
+    {
+      "name": "→ Chinese",
+      "passed": true,
+      "latencyMs": 1080,
+      "engine": "hub",
+      "label": "Labrador Retriever",
+      "translation": "拉布拉多猎犬",
+      "sentence": "这是一只漂亮健康的拉布拉多猎犬。"
+    },
+    {
+      "name": "→ Korean",
+      "passed": true,
+      "latencyMs": 914,
+      "engine": "hub",
+      "label": "Labrador Retriever",
+      "translation": "래브라도 리트리버",
+      "sentence": "강아지는 매우 충성스러운 반려동물입니다."
+    },
+    {
+      "name": "→ Hindi",
+      "passed": true,
+      "latencyMs": 965,
+      "engine": "hub",
+      "label": "a dog",
+      "translation": "एक कुत्ता",
+      "sentence": "यह एक जिज्ञासु और विश्वसनीय जीव है।"
+    },
+    {
+      "name": "Concurrent load (5x3)",
+      "passed": true,
+      "latencyMs": 1276.4666666666667
+    }
+  ]
+}

@@ -83,8 +83,8 @@ const DEFAULT_CONFIG: ArenaLLMConfig = {
   _meta: "Arena LLM Stack — JunoTalk AI model routing config",
   _version: "1.0.0",
   _updated: new Date().toISOString().split("T")[0],
-  primary_provider: "openrouter",
-  fallback_chain: ["openrouter", "libretranslate", "gemini", "deepseek", "kimi", "openai", "offline"],
+  primary_provider: "groq",
+  fallback_chain: ["groq", "github-models", "deepseek", "openrouter", "gemini", "kimi", "openai", "offline"],
   models: {
     translation: {
       model: "qwen/qwen3-8b:free",
@@ -99,40 +99,42 @@ const DEFAULT_CONFIG: ArenaLLMConfig = {
       max_tokens: 1000,
     },
     chat: {
-      model: "gpt-4o-mini",
-      provider: "openai",
+      model: "llama-3.3-70b-versatile",
+      provider: "groq",
       temperature: 0.75,
       max_tokens: 1200,
     },
     monitor: {
-      model: "gpt-4o-mini",
-      provider: "openai",
+      model: "llama-3.3-70b-versatile",
+      provider: "groq",
       temperature: 0.2,
       max_tokens: 300,
     },
     knowledge: {
-      model: "gpt-4o-mini",
-      provider: "openai",
+      model: "llama-3.3-70b-versatile",
+      provider: "groq",
       temperature: 0.3,
       max_tokens: 800,
     },
     general: {
-      model: "gpt-4o-mini",
-      provider: "openai",
+      model: "llama-3.3-70b-versatile",
+      provider: "groq",
       temperature: 0.5,
       max_tokens: 500,
     },
   },
   provider_timeouts_ms: {
-    "github-models": 8000,
+    groq:            10000,
+    "github-models": 18000,
     openai:          20000,
     openrouter:      15000,
     gemini:          15000,
     claude:          25000,
     kimi:            15000,
-    deepseek:        20000,
+    deepseek:        12000,
   },
   rate_limits: {
+    groq:       { dailyTokenBudget: 500000 },
     openrouter: { dailyTokenBudget: 500000 },
     gemini:     { dailyTokenBudget: 100000 },
     claude:     { dailyTokenBudget: 30000 },
@@ -168,28 +170,29 @@ const DEFAULT_CONFIG: ArenaLLMConfig = {
 const DEFAULT_MODEL_REGISTRY: ArenaModelEntry[] = [
   // ── FREE providers: priority < 0 so they always win over paid ──────────────
   {
-    id: "pollinations-free",
-    name: "Pollinations.ai (No Key, 30+ Models)",
-    provider: "pollinations",
-    endpoint: "https://text.pollinations.ai/openai",
-    model: "openai",
-    type: "chat",
-    priority: -10, // first — no key at all
-    weight: 150,
-    cost: 0, quality: 8, speed: 7,
-    timeoutMs: 15000,
-  },
-  {
     id: "groq-llama33",
     name: "Llama 3.3 70B (Groq, Free Tier)",
     provider: "groq",
     endpoint: "https://api.groq.com/openai/v1",
     model: "llama-3.3-70b-versatile",
     type: "chat",
-    priority: -9, // second — key already configured, ultra-fast
-    weight: 170,
-    cost: 0, quality: 8, speed: 10,
+    priority: -10, // first — fastest inference, free, key already configured
+    weight: 200,
+    cost: 0, quality: 9, speed: 10,
     timeoutMs: 10000,
+  },
+  {
+    id: "github-models-gpt4o",
+    name: "GPT-4o (GitHub Models, Free)",
+    provider: "github-models",
+    endpoint: "https://models.inference.ai.azure.com",
+    model: "gpt-4o",
+    type: "chat",
+    priority: -8, // second — best quality free model (GPT-4o for free via GitHub)
+    weight: 100,
+    cost: 0, quality: 10, speed: 6,
+    dailyTokenBudget: 150000,
+    timeoutMs: 18000,
   },
   {
     id: "github-models-llama33",
@@ -200,22 +203,34 @@ const DEFAULT_MODEL_REGISTRY: ArenaModelEntry[] = [
     type: "chat",
     priority: -7, // free — 8 models available
     weight: 160,
-    cost: 0, quality: 8, speed: 7,
+    cost: 0, quality: 9, speed: 7,
     dailyTokenBudget: 150000,
     timeoutMs: 18000,
   },
   {
-    id: "github-models-gpt4o",
-    name: "GPT-4o (GitHub Models, Free)",
-    provider: "github-models",
-    endpoint: "https://models.inference.ai.azure.com",
-    model: "gpt-4o",
+    id: "deepseek-v3-chat",
+    name: "DeepSeek V3 (GitHub Models, Free) — reasoning",
+    provider: "deepseek",
+    endpoint: "https://models.inference.ai.azure.com/chat/completions",
+    model: "DeepSeek-V3",
     type: "chat",
-    priority: -6,
-    weight: 80,
-    cost: 0, quality: 9, speed: 6,
+    priority: -6, // excellent reasoning, free via GitHub token
+    weight: 90,
+    cost: 0, quality: 10, speed: 7,
     dailyTokenBudget: 150000,
-    timeoutMs: 18000,
+    timeoutMs: 12000,
+  },
+  {
+    id: "pollinations-free",
+    name: "Pollinations.ai (No Key, 30+ Models)",
+    provider: "pollinations",
+    endpoint: "https://text.pollinations.ai/openai",
+    model: "openai",
+    type: "chat",
+    priority: -5, // keyless fallback — reliable but quality varies
+    weight: 150,
+    cost: 0, quality: 8, speed: 7,
+    timeoutMs: 15000,
   },
   {
     id: "github-models-llama405b",
@@ -224,9 +239,9 @@ const DEFAULT_MODEL_REGISTRY: ArenaModelEntry[] = [
     endpoint: "https://models.inference.ai.azure.com",
     model: "Meta-Llama-3.1-405B-Instruct",
     type: "chat",
-    priority: -5,
+    priority: -4,
     weight: 40,
-    cost: 0, quality: 7, speed: 3,
+    cost: 0, quality: 8, speed: 3,
     dailyTokenBudget: 150000,
     timeoutMs: 20000,
   },
@@ -307,19 +322,6 @@ const DEFAULT_MODEL_REGISTRY: ArenaModelEntry[] = [
     cost: 0, quality: 9, speed: 7,
     dailyTokenBudget: 500000,
     timeoutMs: 45000,
-  },
-  {
-    id: "deepseek-chat",
-    name: "DeepSeek V3 (GitHub Models, Free)",
-    provider: "deepseek",
-    endpoint: "https://models.inference.ai.azure.com/chat/completions",
-    model: "DeepSeek-V3",
-    type: "chat",
-    priority: -4,
-    weight: 35,
-    cost: 0, quality: 9, speed: 6, // free via GitHub Models token
-    dailyTokenBudget: 150000,
-    timeoutMs: 12000,
   },
   // ── PAID providers: priority ≥ 10 — only reached if ALL free fail ──────────
   {
@@ -546,7 +548,12 @@ export function pickWeightedModel(task: string): ArenaModelEntry | null {
   );
   if (candidates.length === 0) return null;
 
-  return candidates.sort((a, b) => scoredModel(b) - scoredModel(a))[0];
+  return candidates.sort((a, b) => {
+    const scoreDiff = scoredModel(b) - scoredModel(a);
+    // Break score ties using priority — lower number = higher priority
+    if (Math.abs(scoreDiff) > 0.001) return scoreDiff;
+    return a.priority - b.priority;
+  })[0];
 }
 
 /** Get all models for a task sorted by cost-aware score (best first) */

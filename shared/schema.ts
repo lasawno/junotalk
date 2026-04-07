@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, boolean, pgEnum, uniqueIndex, index, integer, real, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, boolean, pgEnum, uniqueIndex, index, integer, real, jsonb, serial } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -76,6 +76,7 @@ export const userPreferences = pgTable("user_preferences", {
   spokenLanguages: text("spoken_languages").array().default(sql`ARRAY[]::text[]`),
   voiceIdentityEnabled: boolean("voice_identity_enabled").default(false),
   voiceIdentityVoice: varchar("voice_identity_voice"),
+  junoStyle: varchar("juno_style").default("casual"),
 });
 
 // Voice profiles table -- one row per user, stores sample metadata
@@ -561,6 +562,21 @@ export const visionScans = pgTable("vision_scans", {
 export const insertVisionScanSchema = createInsertSchema(visionScans).omit({ id: true, scannedAt: true });
 export type InsertVisionScan = z.infer<typeof insertVisionScanSchema>;
 export type VisionScan = typeof visionScans.$inferSelect;
+
+// ── Conversation History — persisted sessions (chat + voice) ─────────────────
+export const conversationSessions = pgTable("conversation_sessions", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id", { length: 128 }).notNull(),
+  sessionId: varchar("session_id", { length: 64 }).notNull().unique(),
+  title: varchar("title", { length: 200 }).notNull().default("New conversation"),
+  mode: varchar("mode", { length: 10 }).notNull().default("chat"),
+  messages: jsonb("messages").notNull().default(sql`'[]'::jsonb`),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export type ConversationSession = typeof conversationSessions.$inferSelect;
+export type InsertConversationSession = typeof conversationSessions.$inferInsert;
 
 export const DEFAULT_FEATURE_FLAGS = [
   "translation_v2_enabled",

@@ -263,6 +263,54 @@ function createLibreTranslateAdapter(): ProviderAdapter {
   };
 }
 
+function createDeepLAdapter(): ProviderAdapter {
+  function toDeepLLang(code: string): string {
+    const map: Record<string, string> = {
+      en: "EN-US", pt: "PT-BR", zh: "ZH", "zh-cn": "ZH", "zh-tw": "ZH-HANT",
+    };
+    return map[code.toLowerCase()] || code.toUpperCase();
+  }
+  return {
+    name: "deepl",
+    isAvailable() { return !!process.env.DEEPL_API_KEY; },
+    async execute(req: AIGatewayRequest): Promise<AIGatewayResponse> {
+      const apiKey = process.env.DEEPL_API_KEY!;
+      const targetLang = req.metadata?.targetLang as string;
+      const sourceLang = req.metadata?.sourceLang as string | undefined;
+      if (!targetLang) throw new Error("DeepL requires metadata.targetLang");
+      const text = req.prompt || req.messages?.[req.messages.length - 1]?.content || "";
+      const baseUrl = apiKey.endsWith(":fx")
+        ? "https://api-free.deepl.com/v2/translate"
+        : "https://api.deepl.com/v2/translate";
+      const fetch = await getFetch();
+      const startMs = Date.now();
+      const body: Record<string, unknown> = {
+        text: [text],
+        target_lang: toDeepLLang(targetLang),
+      };
+      if (sourceLang && sourceLang !== "auto") body.source_lang = toDeepLLang(sourceLang);
+      const resp = await fetch(baseUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `DeepL-Auth-Key ${apiKey}` },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!resp.ok) throw new Error(`DeepL HTTP ${resp.status}`);
+      const data = await resp.json() as { translations?: { text: string }[] };
+      const result = data.translations?.[0]?.text;
+      if (!result) throw new Error("DeepL returned empty result");
+      return {
+        text: result,
+        provider: "deepl",
+        model: "deepl",
+        tokensUsed: Math.ceil(text.length / 4),
+        latencyMs: Date.now() - startMs,
+        fromFallback: false,
+      };
+    },
+  };
+}
+
 function createDeepSeekAdapter(): ProviderAdapter {
   return {
     name: "deepseek",
@@ -468,7 +516,8 @@ function createGeminiAdapter(): ProviderAdapter {
       const apiKey = apiKeys.gemini();
       const { GoogleGenerativeAI } = await import("@google/generative-ai");
       const genAI = new GoogleGenerativeAI(apiKey);
-      const modelName = req.model || "gemini-2.0-flash";
+      const modelName = req.model ||
+        (req.task === "chat" || req.task === "general" ? "gemma-4-27b-it" : "gemini-2.0-flash");
       const model = genAI.getGenerativeModel({ model: modelName });
       const prompt = req.prompt || req.messages?.map(m => m.content).join("\n") || "";
 
@@ -889,20 +938,24 @@ function createClaudeAdapter(): ProviderAdapter {
 }
 
 const defaultRoutingConfig: ProviderRouteConfig[] = [
-  // ── TRANSLATION — free & offline-capable first, OpenAI only as last resort ─
-  // 1. LibreTranslate: self-hosted or public, no per-token cost, works offline
-  { provider: "libretranslate", priority: 0, timeoutMs: 8000,  maxRetries: 1, tasks: ["translation"] },
-  // 2. DeepSeek via GitHub Models: free with GitHub token, excellent multilingual
-  { provider: "deepseek",       priority: 1, timeoutMs: 15000, maxRetries: 1, tasks: ["translation", "translation_prompt"], dailyTokenBudget: 150000 },
-  // 3. GitHub Models (Llama/GPT-4o): free, strong multilingual support
-  { provider: "github-models",  priority: 2, timeoutMs: 18000, maxRetries: 1, tasks: ["translation", "translation_prompt"] },
-  // 4. Gemini: limited free quota
-  { provider: "gemini",         priority: 3, timeoutMs: 15000, maxRetries: 1, tasks: ["translation", "translation_prompt"] },
-  // 5. Kimi: cheap with budget cap
-  { provider: "kimi",           priority: 4, timeoutMs: 15000, maxRetries: 1, tasks: ["translation", "translation_prompt"], dailyTokenBudget: 50000 },
-  // 6. OpenRouter: free models if connected
-  { provider: "openrouter",     priority: 5, timeoutMs: 15000, maxRetries: 1, tasks: ["translation", "translation_prompt"] },
-  // 7. OpenAI: LAST RESORT only — hard 20k/day cap to protect quota
+  // ── TRANSLATION — DeepL → Groq → DeepSeek → fallbacks ───────────────────
+  // 1. DeepL: dedicated translation API, highest quality, requires DEEPL_API_KEY
+  { provider: "deepl",          priority: 0, timeoutMs: 8000,  maxRetries: 1, tasks: ["translation"] },
+  // 2. Groq: ultra-fast, free-tier inference — excellent for translation prompts
+  { provider: "groq",           priority: 1, timeoutMs: 10000, maxRetries: 1, tasks: ["translation", "translation_prompt"] },
+  // 3. DeepSeek via GitHub Models: free with GitHub token, excellent multilingual
+  { provider: "deepseek",       priority: 2, timeoutMs: 15000, maxRetries: 1, tasks: ["translation", "translation_prompt"], dailyTokenBudget: 150000 },
+  // 4. LibreTranslate: self-hosted or public, no per-token cost, works offline
+  { provider: "libretranslate", priority: 3, timeoutMs: 8000,  maxRetries: 1, tasks: ["translation"] },
+  // 5. GitHub Models (Llama/GPT-4o): free, strong multilingual support
+  { provider: "github-models",  priority: 4, timeoutMs: 18000, maxRetries: 1, tasks: ["translation", "translation_prompt"] },
+  // 6. Gemini: limited free quota
+  { provider: "gemini",         priority: 5, timeoutMs: 15000, maxRetries: 1, tasks: ["translation", "translation_prompt"] },
+  // 7. Kimi: cheap with budget cap
+  { provider: "kimi",           priority: 6, timeoutMs: 15000, maxRetries: 1, tasks: ["translation", "translation_prompt"], dailyTokenBudget: 50000 },
+  // 8. OpenRouter: free models if connected
+  { provider: "openrouter",     priority: 7, timeoutMs: 15000, maxRetries: 1, tasks: ["translation", "translation_prompt"] },
+  // 9. OpenAI: LAST RESORT only — hard 20k/day cap to protect quota
   { provider: "openai",         priority: 9, timeoutMs: 20000, maxRetries: 0, tasks: ["translation", "translation_prompt"], dailyTokenBudget: 20000 },
 
   // ── USER CHAT — keyless/already-keyed free providers first ───────────────────
@@ -911,11 +964,12 @@ const defaultRoutingConfig: ProviderRouteConfig[] = [
   { provider: "github-models",  priority: -7,  timeoutMs: 18000, maxRetries: 1, tasks: ["chat", "monitor"] },           // 8 free models, token already set
   { provider: "deepseek",       priority: -4,  timeoutMs: 20000, maxRetries: 1, tasks: ["chat", "monitor", "general"], dailyTokenBudget: 150000 },
   { provider: "openrouter",     priority: -3,  timeoutMs: 15000, maxRetries: 1, tasks: ["chat", "general"] },
+  // ── free open-source fallbacks ─────────────────────────────────────────────
+  { provider: "gemini",         priority: -1,  timeoutMs: 15000, maxRetries: 1, tasks: ["chat", "general"] },           // Gemma 4 free via Gemini API
   // ── paid fallbacks (only reached if ALL free providers fail) ──────────────
-  { provider: "openai",         priority: 0,   timeoutMs: 20000, maxRetries: 1, tasks: ["chat", "monitor", "general"], dailyTokenBudget: 100000 },
-  { provider: "gemini",         priority: 1,   timeoutMs: 15000, maxRetries: 1, tasks: ["chat"] },
   { provider: "kimi",           priority: 3,   timeoutMs: 15000, maxRetries: 1, tasks: ["chat"], dailyTokenBudget: 50000 },
   { provider: "claude",         priority: 5,   timeoutMs: 25000, maxRetries: 1, tasks: ["chat"], dailyTokenBudget: 20000 },
+  { provider: "openai",         priority: 50,  timeoutMs: 20000, maxRetries: 0, tasks: ["chat", "monitor", "general"], dailyTokenBudget: 100000 }, // last resort
 
   // ── BACKGROUND AUTOMATION — keyless/already-keyed free first ─────────────
   { provider: "groq",           priority: -2,  timeoutMs: 10000, maxRetries: 1, tasks: ["background"] },
@@ -953,6 +1007,7 @@ function initAdapters() {
     createGitHubModelsAdapter(),
     createOpenAIAdapter(),
     createOpenRouterAdapter(),
+    createDeepLAdapter(),
     createLibreTranslateAdapter(),
     createDeepSeekAdapter(),
     createKimiAdapter(),
@@ -1135,7 +1190,7 @@ export async function gatewayTranslate(
 
     let translationReq: AIGatewayRequest;
 
-    if (config.provider === "libretranslate") {
+    if (config.provider === "libretranslate" || config.provider === "deepl") {
       translationReq = { ...req };
     } else {
       const recall = recallForTranslation(text, sourceLang, targetLang);

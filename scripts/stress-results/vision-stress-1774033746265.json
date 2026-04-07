@@ -1,0 +1,16 @@
+{
+  "summary": {
+    "total": 3,
+    "passed": 2,
+    "failed": 1,
+    "totalMs": 475
+  },
+  "results": [
+    {
+      "name": "Unknown language code → fallback to code",
+      "passed": false,
+      "latencyMs": 66,
+      "error": "HuggingFace caption failed (410): <!doctype html>\n<html class=\"\">\n\t<head>\n\t\t<meta charset=\"utf-8\" />\n\n\t\t<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\" />\n\n\t\t<meta name=\"description\" content=\"We"
+    }
+  ]
+}

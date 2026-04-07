@@ -1,0 +1,143 @@
+{
+  "summary": {
+    "total": 18,
+    "passed": 18,
+    "failed": 0,
+    "totalMs": 17923
+  },
+  "results": [
+    {
+      "name": "Coffee cup → Spanish",
+      "passed": true,
+      "latencyMs": 886,
+      "engine": "hub",
+      "label": "Cup of coffee",
+      "translation": "Taza de café",
+      "sentence": "Me gusta tomar una taza de café por la mañana."
+    },
+    {
+      "name": "Dog photo → French",
+      "passed": true,
+      "latencyMs": 807,
+      "engine": "hub",
+      "label": "a dog",
+      "translation": "un chien",
+      "sentence": "Le chien est un animal de compagnie très populaire."
+    },
+    {
+      "name": "Cat photo → Japanese",
+      "passed": true,
+      "latencyMs": 1033,
+      "engine": "hub",
+      "label": "cat",
+      "translation": "ネコ",
+      "sentence": "かわいいネコです。"
+    },
+    {
+      "name": "VQA: What color?",
+      "passed": true,
+      "latencyMs": 891,
+      "engine": "hub",
+      "label": "dog",
+      "translation": "perro",
+      "sentence": "El animal en la imagen es un perro de color amarillo claro.",
+      "answer": "The animal in the image is a light yellow dog."
+    },
+    {
+      "name": "VQA: What is this?",
+      "passed": true,
+      "latencyMs": 840,
+      "engine": "hub",
+      "label": "A cup of coffee",
+      "translation": "Une tasse de café",
+      "sentence": "Ceci est une tasse de café sur une soucoupe.",
+      "answer": "This is a cup of coffee on a saucer."
+    },
+    {
+      "name": "→ Spanish",
+      "passed": true,
+      "latencyMs": 682,
+      "engine": "hub",
+      "label": "dog",
+      "translation": "perro",
+      "sentence": "El perro está de pie en el pasto verde."
+    },
+    {
+      "name": "→ French",
+      "passed": true,
+      "latencyMs": 631,
+      "engine": "hub",
+      "label": "dog",
+      "translation": "chien",
+      "sentence": "Le chien est un animal de compagnie très populaire."
+    },
+    {
+      "name": "→ German",
+      "passed": true,
+      "latencyMs": 829,
+      "engine": "hub",
+      "label": "dog",
+      "translation": "Hund",
+      "sentence": "Der Hund ist ein Haustier, das oft als Begleiter und Beschützer gehalten wird."
+    },
+    {
+      "name": "→ Japanese",
+      "passed": true,
+      "latencyMs": 1186,
+      "engine": "hub",
+      "label": "dog",
+      "translation": "犬",
+      "sentence": "犬は人間の最良の友達です。"
+    },
+    {
+      "name": "→ Portuguese",
+      "passed": true,
+      "latencyMs": 860,
+      "engine": "hub",
+      "label": "Labrador Retriever",
+      "translation": "Labrador Retriever",
+      "sentence": "O Labrador Retriever é um cão amigável e afetuoso, muito popular como animal de estimação."
+    },
+    {
+      "name": "→ Arabic",
+      "passed": true,
+      "latencyMs": 880,
+      "engine": "hub",
+      "label": "A dog",
+      "translation": "كلب",
+      "sentence": "هذا كلب جميل يقف في الحديقة."
+    },
+    {
+      "name": "→ Chinese",
+      "passed": true,
+      "latencyMs": 1056,
+      "engine": "hub",
+      "label": "dog",
+      "translation": "狗",
+      "sentence": "这是一只金毛拉布拉多犬。它的毛发呈亮黄色,站在绿色的草地上显得十分优雅。这种犬种智商高、性格温顺,是很多人喜欢的宠物。"
+    },
+    {
+      "name": "→ Korean",
+      "passed": true,
+      "latencyMs": 875,
+      "engine": "hub",
+      "label": "dog",
+      "translation": "개",
+      "sentence": "이 개는 매우 귀엽고 활발해 보입니다."
+    },
+    {
+      "name": "→ Hindi",
+      "passed": true,
+      "latencyMs": 821,
+      "engine": "hub",
+      "label": "dog",
+      "translation": "कुत्ता",
+      "sentence": "कुत्ता एक वफादार और प्यारा पालतू जानवर है।"
+    },
+    {
+      "name": "Concurrent load (5x3)",
+      "passed": true,
+      "latencyMs": 1080.3333333333333
+    }
+  ]
+}

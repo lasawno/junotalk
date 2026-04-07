@@ -2,25 +2,31 @@
  * VoiceSession.ts
  *
  * A self-contained pipeline for voice-to-voice conversation:
- *   mic (SpeechRecognition) → translate/respond → TTS playback → mic again
+ *   mic → transcript → translate/respond → TTS playback → mic again
  *
- * Core design:
- *  - Single `phase` property is the ONLY thing that decides what can happen next.
- *    No scattered boolean flags that can diverge under race conditions.
- *  - Mic is ALWAYS stopped before TTS plays (mandatory on iOS — device cannot
- *    simultaneously record and play through the Web Audio API).
- *  - TTS always tries the provided `fetchAudio` path first, then falls back to
- *    the browser's built-in SpeechSynthesis API.
- *  - All restarts go through `_startRecognition` so the guards are in one place.
+ * New capabilities vs. original:
  *
- * Usage:
- *   const session = new VoiceSession({ lang: 'en', onFinalTranscript, ... });
- *   session.unlock();          // call inside a tap handler
- *   session.start();           // begin listening
- *   await session.speak(text); // play TTS (mic auto-pauses / resumes)
- *   session.stop();            // end session
- *   session.destroy();         // cleanup on unmount
+ * 1. AUDIO LEVEL MONITORING
+ *    When the mic is open a requestAnimationFrame loop reads the analyser
+ *    node and calls `onAudioLevel(0-100)` so the UI can animate the orb.
+ *
+ * 2. BARGE-IN
+ *    When `bargeIn: true`, a VAD poll runs during TTS playback. If the
+ *    user speaks for ≥350 ms, TTS is cut and mic opens immediately.
+ *
+ * 3. WHISPER STT
+ *    When `whisperMode: true`, uses a MediaRecorder + VAD + /api/v1/transcribe
+ *    pipeline instead of browser SpeechRecognition. More reliable across
+ *    all devices and languages, especially mobile Safari.
+ *
+ * Core design unchanged:
+ *  - Single `phase` property is the ONLY thing that decides what happens next.
+ *  - Mic ALWAYS stops before TTS plays (mandatory on iOS).
+ *  - All restarts go through one gated function.
  */
+
+import { buildAudioProcessor, isSpeechActive } from '@/lib/audio-processor';
+import type { AudioProcessorResult } from '@/lib/audio-processor';
 
 export type VoicePhase = 'idle' | 'listening' | 'processing' | 'speaking';
 
@@ -28,25 +34,59 @@ export interface VoiceSessionOptions {
   lang: string;
   speechSpeed?: number;
   voiceId?: string;
+
+  /** Called when the user finishes an utterance. */
   onFinalTranscript: (text: string) => void;
+  /** Called continuously with partial text while the user speaks. */
   onInterimTranscript?: (text: string) => void;
+  /** Called whenever the phase changes (idle/listening/processing/speaking). */
   onPhaseChange?: (phase: VoicePhase) => void;
+  /** Called on fatal or user-facing errors. */
   onError?: (msg: string) => void;
+
   /**
    * Fetch raw TTS audio as an ArrayBuffer.
    * Should POST to /api/v1/tts and return the response body.
    * Throw on failure — VoiceSession will fall back to SpeechSynthesis.
    */
   fetchAudio: (text: string, lang: string, voiceId: string, speed: number) => Promise<ArrayBuffer>;
+
+  /**
+   * Called ~60fps while the mic is open with a 0–100 signal level.
+   * Use to drive orb / waveform animations.
+   */
+  onAudioLevel?: (level: number) => void;
+
+  /**
+   * When true, TTS is interrupted if the user starts speaking during playback.
+   * Default: false.
+   */
+  bargeIn?: boolean;
+
+  /**
+   * When true, uses a MediaRecorder + Whisper pipeline instead of browser
+   * SpeechRecognition. More reliable on mobile and non-Chrome browsers.
+   * Default: false (browser SpeechRecognition).
+   */
+  whisperMode?: boolean;
 }
 
-const MIC_RESUME_DELAY_MS   = 700;
-const NO_SPEECH_RESTART_MS  = 350;
-const ONEND_RESTART_MS      = 200;
-const TTS_SAFETY_TIMEOUT_MS = 25_000;
-// After 3 minutes of silence the session auto-stops.
-// The timer resets on every speech event so active conversations keep going.
-const SAFETY_IDLE_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+// ─── Timing constants ─────────────────────────────────────────────────────────
+const MIC_RESUME_DELAY_MS    = 2000;   // iOS audio hardware flush after TTS
+const NO_SPEECH_RESTART_MS   = 350;
+const ONEND_RESTART_MS       = 200;
+const TTS_SAFETY_TIMEOUT_MS  = 25_000;
+const SAFETY_IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+// Whisper recording constants
+const VAD_POLL_MS      = 100;   // how often we check if user is speaking
+const SILENCE_CUTOFF_MS = 700;  // silence this long → end of utterance
+const MIN_SPEECH_MS    = 400;   // shorter clips are noise — discard
+
+// Barge-in: how long sustained speech must be before we cut TTS
+const BARGE_IN_THRESHOLD_MS = 350;
+// VAD threshold for barge-in — higher than normal to ignore TTS echo from speakers
+const BARGE_IN_VAD_THRESHOLD = 28;
 
 const LANG_TO_BCP47: Record<string, string> = {
   en: 'en-US', es: 'es-ES', fr: 'fr-FR', de: 'de-DE', it: 'it-IT',
@@ -57,19 +97,33 @@ const LANG_TO_BCP47: Record<string, string> = {
 };
 
 export class VoiceSession {
-  private phase: VoicePhase = 'idle';
+  phase: VoicePhase = 'idle';
   private sessionActive = false;
   private opts: VoiceSessionOptions;
 
+  // Browser SpeechRecognition
   private recognition: any = null;
-  private silenceTimer: ReturnType<typeof setTimeout> | null = null;
-  private restartTimer: ReturnType<typeof setTimeout> | null = null;
-  private safetyTimer: ReturnType<typeof setTimeout> | null = null;
+  private silenceTimer:  ReturnType<typeof setTimeout> | null = null;
+  private restartTimer:  ReturnType<typeof setTimeout> | null = null;
+  private safetyTimer:   ReturnType<typeof setTimeout> | null = null;
 
+  // TTS playback
   private audioCtx: AudioContext | null = null;
   private audioSource: AudioBufferSourceNode | null = null;
   private audioEl: HTMLAudioElement | null = null;
   private stopCurrentAudio: (() => void) | null = null;
+
+  // Audio level monitoring
+  private audioProc: AudioProcessorResult | null = null;
+  private levelRafId: number | null = null;
+
+  // Whisper mode
+  private whisperLoopActive = false;
+
+  // Barge-in
+  private bargeInTimer: ReturnType<typeof setTimeout> | null = null;
+  private bargeInInterval: ReturnType<typeof setInterval> | null = null;
+  private bargeInTriggered = false;
 
   private cachedVoices: SpeechSynthesisVoice[] = [];
 
@@ -80,9 +134,7 @@ export class VoiceSession {
 
   // ─── Public API ────────────────────────────────────────────────────────────
 
-  /**
-   * Call synchronously inside a tap handler to unblock audio on iOS / Safari.
-   */
+  /** Call synchronously inside a tap handler to unblock audio on iOS / Safari. */
   unlock(): void {
     try {
       if (!this.audioCtx) {
@@ -93,23 +145,25 @@ export class VoiceSession {
       }
     } catch {}
 
-    // Prime the <audio> element so play() works without a user gesture later
-    if (!this.audioEl) {
-      this.audioEl = new Audio();
-    }
+    if (!this.audioEl) this.audioEl = new Audio();
     const a = this.audioEl;
     a.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=';
     a.volume = 0;
-    a.play()
-      .then(() => { a.pause(); a.volume = 1; })
-      .catch(() => {});
+    a.play().then(() => { a.pause(); a.volume = 1; }).catch(() => {});
 
+    if ('speechSynthesis' in window) {
+      const primer = new SpeechSynthesisUtterance('');
+      primer.volume = 0;
+      window.speechSynthesis.speak(primer);
+    }
     console.log('[VoiceSession] unlock() called');
   }
 
   /** Begin a listening session. Safe to call multiple times — idempotent. */
   start(): void {
     if (this.sessionActive) return;
+    this._stopAudio();
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
     this.sessionActive = true;
     this._setPhase('listening');
     this._startRecognition('start()');
@@ -121,10 +175,13 @@ export class VoiceSession {
   stop(): void {
     console.log('[VoiceSession] stop() called, phase was:', this.phase);
     this.sessionActive = false;
+    this.whisperLoopActive = false;
     this._setPhase('idle');
     this._clearAllTimers();
     this._abortRecognition('stop()');
     this._stopAudio();
+    this._stopAudioLevel();
+    this._stopBargeIn();
     if ('speechSynthesis' in window) window.speechSynthesis.cancel();
   }
 
@@ -132,63 +189,66 @@ export class VoiceSession {
    * Play TTS for `text`.
    *  1. Immediately transitions to 'speaking' — mic is aborted synchronously.
    *  2. Resumes AudioContext (iOS suspends it while mic is active).
-   *  3. Fetches and plays TTS audio; falls back to SpeechSynthesis on failure.
-   *  4. Transitions back to 'listening' and restarts mic after MIC_RESUME_DELAY_MS.
-   *
-   * Safe to call from async contexts — the phase transition is synchronous so
-   * recognition.onend / onerror can see it before any await completes.
-   *
-   * @param ttsLang  Optional override for the TTS language (e.g. the target language
-   *                 when translating). Defaults to the session's recognition language.
-   * @param ttsVoiceId  Optional voice override for this utterance.
+   *  3. If `bargeIn: true`, monitors VAD during playback and cuts TTS on speech.
+   *  4. Fetches and plays TTS audio; falls back to SpeechSynthesis on failure.
+   *  5. Transitions back to 'listening' and restarts mic after MIC_RESUME_DELAY_MS.
    */
   async speak(text: string, ttsLang?: string, ttsVoiceId?: string): Promise<void> {
     if (!text.trim()) return;
 
-    const lang      = ttsLang    ?? this.opts.lang;
-    const voiceId   = ttsVoiceId ?? this.opts.voiceId ?? 'nova';
-    const speechSpeed = this.opts.speechSpeed ?? 0.92;
+    const cleanText = VoiceSession._cleanForTTS(text);
+    if (!cleanText) return;
 
-    // ── Phase transition (synchronous — must be first) ──────────────────────
+    const lang        = ttsLang    ?? this.opts.lang;
+    const voiceId     = ttsVoiceId ?? this.opts.voiceId ?? 'nova';
+    const speechSpeed = this.opts.speechSpeed ?? 0.95;
+
+    // ── Phase transition (synchronous) ─────────────────────────────────────
     this._setPhase('speaking');
     this._clearAllTimers();
     this._abortRecognition('speak()');
+    this._stopAudioLevel();
     this._stopAudio();
 
-    // ── Resume AudioContext — iOS suspends it when mic is active ────────────
+    // ── Resume AudioContext ─────────────────────────────────────────────────
     if (this.audioCtx && this.audioCtx.state !== 'running') {
       await this.audioCtx.resume().catch(() => {});
     }
-    console.log('[VoiceSession] speak() — AudioContext state:', this.audioCtx?.state ?? 'none');
 
-    // ── Safety valve — ensure we always leave speaking phase ────────────────
+    // ── Safety valve ────────────────────────────────────────────────────────
     this.safetyTimer = setTimeout(() => {
       console.warn('[VoiceSession] safety timer fired — forcing phase reset');
       this._exitSpeaking();
     }, TTS_SAFETY_TIMEOUT_MS);
 
-    // ── Attempt TTS fetch → Web Audio / <audio> element ─────────────────────
+    // ── Start barge-in monitoring ───────────────────────────────────────────
+    this.bargeInTriggered = false;
+    if (this.opts.bargeIn) {
+      this._startBargeIn();
+    }
+
+    // ── TTS fetch + play ────────────────────────────────────────────────────
     let playedOk = false;
     try {
-      console.log('[VoiceSession] fetching TTS audio...');
-      const buf = await this.opts.fetchAudio(text, lang, voiceId, speechSpeed);
-      await this._playBuffer(buf);
-      console.log('[VoiceSession] TTS audio finished');
+      const buf = await this.opts.fetchAudio(cleanText, lang, voiceId, speechSpeed);
+      if (!this.bargeInTriggered) {
+        await this._playBuffer(buf);
+      }
       playedOk = true;
     } catch (e: any) {
       console.warn('[VoiceSession] TTS fetch/play failed:', e?.message ?? e);
     }
 
     // ── Fallback to browser SpeechSynthesis ─────────────────────────────────
-    if (!playedOk) {
+    if (!playedOk && !this.bargeInTriggered) {
       try {
-        await this._browserSpeak(text, lang);
-        console.log('[VoiceSession] SpeechSynthesis finished');
+        await this._browserSpeak(cleanText, lang);
       } catch (e: any) {
         console.warn('[VoiceSession] SpeechSynthesis also failed:', e?.message ?? e);
       }
     }
 
+    this._stopBargeIn();
     clearTimeout(this.safetyTimer!);
     this.safetyTimer = null;
 
@@ -196,37 +256,27 @@ export class VoiceSession {
   }
 
   /**
-   * Pause mic without ending the session — use this when waiting for an AI
-   * response so the mic doesn't pick up background noise or the user speaking
-   * again before Juno has had a chance to reply.
-   *
-   * The session stays "alive" (sessionActive=true). Calling speak() after this
-   * will transition straight to 'speaking' → 'listening' as normal.
+   * Pause mic without ending the session — use while waiting for AI response.
    */
   pauseForProcessing(): void {
     if (!this.sessionActive) return;
     this._clearAllTimers();
     this._abortRecognition('pauseForProcessing()');
+    this._stopAudioLevel();
     this._setPhase('processing');
-    console.log('[VoiceSession] pauseForProcessing() — mic paused while AI thinks');
+    // Safety valve in case speak() is never called
+    this.safetyTimer = setTimeout(() => {
+      if (this.sessionActive && this.phase === 'processing') {
+        console.warn('[VoiceSession] processing timeout — resuming listening');
+        this._exitSpeaking();
+      }
+    }, 35_000);
   }
 
-  /** Update the recognition language (takes effect on next recognition start). */
-  setLang(lang: string): void {
-    this.opts.lang = lang;
-  }
-
-  setVoiceId(id: string): void {
-    this.opts.voiceId = id;
-  }
-
-  setSpeed(speed: number): void {
-    this.opts.speechSpeed = speed;
-  }
-
-  getPhase(): VoicePhase {
-    return this.phase;
-  }
+  setLang(lang: string)     : void { this.opts.lang = lang; }
+  setVoiceId(id: string)    : void { this.opts.voiceId = id; }
+  setSpeed(speed: number)   : void { this.opts.speechSpeed = speed; }
+  getPhase(): VoicePhase           { return this.phase; }
 
   /** Call on component unmount. */
   destroy(): void {
@@ -237,43 +287,166 @@ export class VoiceSession {
     console.log('[VoiceSession] destroyed');
   }
 
-  // ─── Private helpers ───────────────────────────────────────────────────────
-
-  private _setPhase(p: VoicePhase): void {
-    if (this.phase === p) return;
-    console.log(`[VoiceSession] phase: ${this.phase} → ${p}`);
-    this.phase = p;
-    this.opts.onPhaseChange?.(p);
-  }
-
-  /**
-   * Called after TTS finishes (or fails). Decides whether to re-enter listening.
-   */
-  private _exitSpeaking(): void {
-    if (!this.sessionActive) {
-      this._setPhase('idle');
-      return;
-    }
-    // Back to listening — give iOS time to fully release the audio session
-    this._setPhase('listening');
-    this.restartTimer = setTimeout(() => {
-      if (this.sessionActive && this.phase === 'listening' && !this.recognition) {
-        this._startRecognition('_exitSpeaking()');
-        this._resetSafetyTimer();
-      }
-    }, MIC_RESUME_DELAY_MS);
-  }
+  // ─── Private: recognition dispatch ────────────────────────────────────────
 
   private _startRecognition(reason: string): void {
-    // Don't allow recognition while speaking or when session is off
     if (!this.sessionActive || this.phase !== 'listening') {
       console.log(`[VoiceSession] _startRecognition(${reason}) skipped — phase:${this.phase} session:${this.sessionActive}`);
       return;
     }
-    if (this.recognition) {
-      // Already running
+
+    if (this.opts.whisperMode) {
+      this._startWhisperLoop(reason);
+    } else {
+      this._startBrowserRecognition(reason);
+    }
+  }
+
+  // ─── Private: Whisper STT pipeline ────────────────────────────────────────
+
+  /**
+   * Whisper STT loop:
+   *   1. Open mic + audio processor (VAD + analyser + processed stream)
+   *   2. Wait for speech to start (VAD)
+   *   3. Record until 700 ms of silence
+   *   4. POST audio blob to /api/v1/transcribe
+   *   5. Deliver transcript and loop back to step 2
+   *
+   * Runs until sessionActive=false or phase changes away from 'listening'.
+   */
+  private async _startWhisperLoop(reason: string): Promise<void> {
+    if (this.whisperLoopActive) return;
+    this.whisperLoopActive = true;
+    console.log(`[VoiceSession] Whisper loop starting (${reason})`);
+
+    let proc: AudioProcessorResult | null = null;
+    try {
+      proc = await buildAudioProcessor();
+      this.audioProc = proc;
+      this._startAudioLevel(proc.analyserNode);
+    } catch (e) {
+      console.warn('[VoiceSession] Whisper: audio processor init failed:', e);
+      this.whisperLoopActive = false;
+      // Fall back to browser SR
+      if (this.sessionActive && this.phase === 'listening') {
+        this._startBrowserRecognition('whisper-fallback');
+      }
       return;
     }
+
+    const getMimeType = (): string | undefined => {
+      const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+      return types.find(t => MediaRecorder.isTypeSupported(t));
+    };
+    const mimeType = getMimeType();
+
+    while (this.whisperLoopActive && this.sessionActive && this.phase === 'listening') {
+      // Phase 1: wait for speech to start
+      const speechStarted = await this._waitForVAD(proc.analyserNode, true, 10_000);
+      if (!speechStarted || !this.whisperLoopActive || !this.sessionActive) break;
+      if (this.phase !== 'listening') break;
+
+      console.log('[VoiceSession] Whisper: speech detected — recording');
+      this.opts.onInterimTranscript?.('…');
+
+      // Phase 2: record until silence
+      const chunks: BlobPart[] = [];
+      const recorder = new MediaRecorder(proc.processedStream, mimeType ? { mimeType } : undefined);
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+      recorder.start(100);
+
+      const speechStart = Date.now();
+      let lastSpeechMs = Date.now();
+
+      // Poll VAD until silence sustained for SILENCE_CUTOFF_MS
+      await new Promise<void>((resolve) => {
+        const pollId = setInterval(() => {
+          if (!this.whisperLoopActive || !this.sessionActive || this.phase !== 'listening') {
+            clearInterval(pollId);
+            resolve();
+            return;
+          }
+          if (isSpeechActive(proc!.analyserNode)) {
+            lastSpeechMs = Date.now();
+          } else if (Date.now() - lastSpeechMs >= SILENCE_CUTOFF_MS) {
+            clearInterval(pollId);
+            resolve();
+          }
+        }, VAD_POLL_MS);
+      });
+
+      recorder.stop();
+      await new Promise<void>((r) => { recorder.onstop = () => r(); });
+
+      const speechDuration = Date.now() - speechStart;
+      if (!this.whisperLoopActive || !this.sessionActive || this.phase !== 'listening') break;
+
+      if (speechDuration < MIN_SPEECH_MS || chunks.length === 0) {
+        console.log('[VoiceSession] Whisper: clip too short, ignoring');
+        this.opts.onInterimTranscript?.('');
+        continue;
+      }
+
+      // Phase 3: transcribe
+      const blob = new Blob(chunks, { type: mimeType ?? 'audio/webm' });
+      console.log(`[VoiceSession] Whisper: sending ${(blob.size / 1024).toFixed(1)} KB for transcription`);
+
+      try {
+        const fd = new FormData();
+        fd.append('audio', blob, `clip.${mimeType?.includes('mp4') ? 'm4a' : 'webm'}`);
+        fd.append('lang', LANG_TO_BCP47[this.opts.lang] || this.opts.lang);
+
+        const res = await fetch('/api/v1/transcribe', { method: 'POST', body: fd, credentials: 'include' });
+        if (res.ok) {
+          const { text } = await res.json();
+          const trimmed = (text ?? '').trim();
+          console.log('[VoiceSession] Whisper transcript:', trimmed.slice(0, 80));
+          this.opts.onInterimTranscript?.('');
+          if (trimmed) {
+            this._resetSafetyTimer();
+            this.opts.onFinalTranscript(trimmed);
+          }
+        } else {
+          console.warn('[VoiceSession] Whisper: transcribe API error', res.status);
+          this.opts.onInterimTranscript?.('');
+        }
+      } catch (e) {
+        console.warn('[VoiceSession] Whisper: transcribe fetch failed:', e);
+        this.opts.onInterimTranscript?.('');
+      }
+    }
+
+    // Cleanup
+    proc?.dispose();
+    if (this.audioProc === proc) this.audioProc = null;
+    this._stopAudioLevel();
+    this.whisperLoopActive = false;
+    console.log('[VoiceSession] Whisper loop exited');
+  }
+
+  /**
+   * Wait for VAD to return `targetState` (true=speech, false=silence) or
+   * until `timeoutMs` elapses. Returns true if target state was reached.
+   */
+  private _waitForVAD(
+    analyser: AnalyserNode,
+    targetState: boolean,
+    timeoutMs: number,
+  ): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const deadline = Date.now() + timeoutMs;
+      const id = setInterval(() => {
+        if (!this.whisperLoopActive || !this.sessionActive) { clearInterval(id); resolve(false); return; }
+        if (Date.now() > deadline) { clearInterval(id); resolve(false); return; }
+        if (isSpeechActive(analyser) === targetState) { clearInterval(id); resolve(true); }
+      }, VAD_POLL_MS);
+    });
+  }
+
+  // ─── Private: Browser SpeechRecognition ───────────────────────────────────
+
+  private _startBrowserRecognition(reason: string): void {
+    if (this.recognition) return; // already running
 
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SR) {
@@ -281,16 +454,16 @@ export class VoiceSession {
       return;
     }
 
+    // Start audio processor for level monitoring (browser SR manages its own mic)
+    this._ensureAudioLevel();
+
     const r = new SR();
     r.lang = LANG_TO_BCP47[this.opts.lang] || this.opts.lang;
     r.interimResults = true;
     r.continuous = true;
     r.maxAlternatives = 1;
 
-    r.onstart = () => {
-      console.log(`[VoiceSession] recognition started (${reason})`);
-      // Phase was already set to 'listening' before start() was called
-    };
+    r.onstart = () => console.log(`[VoiceSession] recognition started (${reason})`);
 
     r.onresult = (event: any) => {
       let interim = '';
@@ -306,36 +479,29 @@ export class VoiceSession {
         }
       }
       if (interim) this.opts.onInterimTranscript?.(interim);
-      // Any actual speech resets the 10-min safety timer
       this._resetSafetyTimer();
     };
 
     r.onend = () => {
-      console.log(`[VoiceSession] recognition.onend — phase:${this.phase} session:${this.sessionActive}`);
-      // Null-out only if this is still the active instance
+      console.log(`[VoiceSession] recognition.onend — phase:${this.phase}`);
       if (this.recognition === r) this.recognition = null;
-
       if (this.sessionActive && this.phase === 'listening') {
-        // Normal end-of-utterance restart (iOS fires onend after every phrase)
-        this._resetSafetyTimer(); // keep the 10-min safety clock alive
+        this._resetSafetyTimer();
         this.restartTimer = setTimeout(() => {
           if (this.sessionActive && this.phase === 'listening' && !this.recognition) {
             this._startRecognition('onend restart');
           }
         }, ONEND_RESTART_MS);
       }
-      // If phase is 'speaking', _exitSpeaking() owns the restart
     };
 
     r.onerror = (event: any) => {
-      console.log(`[VoiceSession] recognition.onerror: ${event.error} — phase:${this.phase}`);
+      console.log(`[VoiceSession] recognition.onerror: ${event.error}`);
       if (this.recognition === r) this.recognition = null;
 
       if (event.error === 'no-speech') {
-        // no-speech is completely normal — the browser times out when it hears
-        // silence. Just restart transparently, like ChatGPT voice mode does.
         if (this.sessionActive && this.phase === 'listening') {
-          this._resetSafetyTimer(); // silence resets the idle safety clock
+          this._resetSafetyTimer();
           this.restartTimer = setTimeout(() => {
             if (this.sessionActive && this.phase === 'listening' && !this.recognition) {
               this._startRecognition('no-speech restart');
@@ -348,12 +514,20 @@ export class VoiceSession {
       if (event.error === 'not-allowed') {
         this.sessionActive = false;
         this._setPhase('idle');
-        this.opts.onError?.('Microphone access denied. Please allow microphone permissions.');
+        this.opts.onError?.('Microphone access denied. Please refresh and allow microphone access.');
         return;
       }
 
-      if (event.error !== 'aborted') {
-        this.opts.onError?.(`Speech recognition error: ${event.error}`);
+      if (event.error === 'aborted') return;
+
+      // Transient errors — retry
+      console.warn(`[VoiceSession] transient error "${event.error}" — scheduling recovery`);
+      if (this.sessionActive && this.phase === 'listening') {
+        this.restartTimer = setTimeout(() => {
+          if (this.sessionActive && this.phase === 'listening' && !this.recognition) {
+            this._startRecognition(`recovery:${event.error}`);
+          }
+        }, 800);
       }
     };
 
@@ -363,91 +537,191 @@ export class VoiceSession {
     } catch (e) {
       console.warn('[VoiceSession] recognition.start() threw:', e);
       this.recognition = null;
+      if (this.sessionActive && this.phase === 'listening') {
+        this.restartTimer = setTimeout(() => {
+          if (this.sessionActive && this.phase === 'listening' && !this.recognition) {
+            this._startRecognition('start-threw recovery');
+          }
+        }, 1200);
+      }
     }
   }
 
-  private _abortRecognition(reason: string): void {
-    if (!this.recognition) return;
-    console.log(`[VoiceSession] aborting recognition (${reason})`);
-    try { this.recognition.abort(); } catch {}
-    this.recognition = null;
+  // ─── Private: audio level monitoring ──────────────────────────────────────
+
+  /** Start a separate getUserMedia stream just for the analyser in browser SR mode. */
+  private async _ensureAudioLevel(): Promise<void> {
+    if (!this.opts.onAudioLevel) return;
+    if (this.audioProc) return; // already have one
+    try {
+      const proc = await buildAudioProcessor();
+      this.audioProc = proc;
+      this._startAudioLevel(proc.analyserNode);
+    } catch {
+      // Not critical — orb just won't animate
+    }
   }
 
+  private _startAudioLevel(analyser: AnalyserNode): void {
+    if (!this.opts.onAudioLevel) return;
+    this._stopAudioLevel();
+
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    const tick = () => {
+      if (!this.sessionActive || this.phase !== 'listening') {
+        this.levelRafId = null;
+        this.opts.onAudioLevel?.(0);
+        return;
+      }
+      analyser.getByteFrequencyData(data);
+      const lo = Math.floor(data.length * 0.10);
+      const hi = Math.floor(data.length * 0.50);
+      const slice = data.slice(lo, hi);
+      const avg = slice.reduce((s, v) => s + v, 0) / slice.length;
+      const level = Math.min(100, Math.round((avg / 255) * 100 * 2.5)); // boost for UI
+      this.opts.onAudioLevel?.(level);
+      this.levelRafId = requestAnimationFrame(tick);
+    };
+    this.levelRafId = requestAnimationFrame(tick);
+  }
+
+  private _stopAudioLevel(): void {
+    if (this.levelRafId != null) {
+      cancelAnimationFrame(this.levelRafId);
+      this.levelRafId = null;
+    }
+    this.opts.onAudioLevel?.(0);
+    // Release audio processor if we own one and we're not in a Whisper loop
+    if (this.audioProc && !this.whisperLoopActive) {
+      try { this.audioProc.dispose(); } catch {}
+      this.audioProc = null;
+    }
+  }
+
+  // ─── Private: barge-in ────────────────────────────────────────────────────
+
   /**
-   * Play an ArrayBuffer of audio data.
-   * Tries Web Audio API first, falls back to an <audio> element.
+   * Monitors VAD during TTS playback. If speech sustained for BARGE_IN_THRESHOLD_MS,
+   * stop TTS so the mic can open for the user's response.
    */
+  private _startBargeIn(): void {
+    if (!this.opts.bargeIn) return;
+    let speechMs = 0;
+
+    this.bargeInInterval = setInterval(() => {
+      if (!this.sessionActive || this.phase !== 'speaking' || !this.audioProc) return;
+
+      if (isSpeechActive(this.audioProc.analyserNode, BARGE_IN_VAD_THRESHOLD)) {
+        speechMs += VAD_POLL_MS;
+        if (speechMs >= BARGE_IN_THRESHOLD_MS) {
+          console.log('[VoiceSession] Barge-in detected — cutting TTS');
+          this.bargeInTriggered = true;
+          this._stopAudio();
+          if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+          this._stopBargeIn();
+        }
+      } else {
+        speechMs = 0; // reset on silence
+      }
+    }, VAD_POLL_MS);
+
+    // For barge-in we need the analyser. Start it if not already running.
+    if (!this.audioProc) {
+      buildAudioProcessor().then((proc) => {
+        this.audioProc = proc;
+      }).catch(() => {});
+    }
+  }
+
+  private _stopBargeIn(): void {
+    if (this.bargeInInterval) { clearInterval(this.bargeInInterval); this.bargeInInterval = null; }
+    if (this.bargeInTimer)    { clearTimeout(this.bargeInTimer); this.bargeInTimer = null; }
+  }
+
+  // ─── Private: TTS playback ────────────────────────────────────────────────
+
+  private static _cleanForTTS(raw: string): string {
+    return raw
+      .replace(/\*\*(.*?)\*\*/g, '$1')
+      .replace(/\*(.*?)\*/g, '$1')
+      .replace(/#{1,6}\s+/gm, '')
+      .replace(/^[\s]*[•\-\*]\s+/gm, '')
+      .replace(/^\s*\d+\.\s+/gm, '')
+      .replace(/`{1,3}(.*?)`{1,3}/g, '$1')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  private _exitSpeaking(): void {
+    if (!this.sessionActive) { this._setPhase('idle'); return; }
+    this._setPhase('listening');
+    this.restartTimer = setTimeout(() => {
+      if (this.sessionActive && this.phase === 'listening' && !this.recognition && !this.whisperLoopActive) {
+        this._startRecognition('_exitSpeaking()');
+        this._resetSafetyTimer();
+      }
+    }, MIC_RESUME_DELAY_MS);
+  }
+
   private _playBuffer(buf: ArrayBuffer): Promise<void> {
     this._stopAudio();
-
     return new Promise<void>(async (resolve, reject) => {
-      // ── Web Audio API ──────────────────────────────────────────────────────
+      const blob = new Blob([buf], { type: 'audio/mpeg' });
+      const url  = URL.createObjectURL(blob);
+      const audio = this.audioEl ?? new Audio();
+      this.audioEl = audio;
+      if (audio.src?.startsWith('blob:')) { try { URL.revokeObjectURL(audio.src); } catch {} }
+
+      const cleanup = () => { URL.revokeObjectURL(url); resolve(); };
+      audio.onended = cleanup;
+      audio.onerror = null;
+      this.stopCurrentAudio = () => { try { audio.pause(); } catch {} cleanup(); };
+
+      audio.src = url;
+      audio.load();
+      try {
+        await audio.play();
+        audio.onerror = () => { URL.revokeObjectURL(url); reject(new Error('<audio> error')); };
+        return;
+      } catch {
+        URL.revokeObjectURL(url);
+        this.stopCurrentAudio = null;
+      }
+
+      // Web Audio API fallback
       const ctx = this.audioCtx;
       if (ctx) {
-        // Always try to resume — iOS suspends after mic releases
         if (ctx.state !== 'running') await ctx.resume().catch(() => {});
         if (ctx.state === 'running') {
           try {
             const decoded = await ctx.decodeAudioData(buf.slice(0));
-            const source = ctx.createBufferSource();
+            const source  = ctx.createBufferSource();
             source.buffer = decoded;
             source.connect(ctx.destination);
             this.audioSource = source;
-            this.stopCurrentAudio = () => {
-              try { source.stop(); } catch {}
-              resolve();
-            };
-            source.onended = () => {
-              if (this.audioSource === source) this.audioSource = null;
-              resolve();
-            };
+            this.stopCurrentAudio = () => { try { source.stop(); } catch {} resolve(); };
+            source.onended = () => { if (this.audioSource === source) this.audioSource = null; resolve(); };
             source.start(0);
-            console.log('[VoiceSession] AudioContext playback started');
             return;
-          } catch (e) {
-            console.warn('[VoiceSession] AudioContext decode failed, trying <audio>:', e);
-          }
+          } catch {}
         }
       }
 
-      // ── <audio> element fallback ───────────────────────────────────────────
-      const blob = new Blob([buf], { type: 'audio/mpeg' });
-      const url = URL.createObjectURL(blob);
-      const audio = this.audioEl ?? new Audio();
-      this.audioEl = audio;
-      if (audio.src?.startsWith('blob:')) {
-        try { URL.revokeObjectURL(audio.src); } catch {}
-      }
-
-      const cleanup = () => { URL.revokeObjectURL(url); resolve(); };
-      audio.onended = cleanup;
-      audio.onerror = () => { URL.revokeObjectURL(url); reject(new Error('<audio> playback error')); };
-      this.stopCurrentAudio = () => { audio.pause(); cleanup(); };
-
-      audio.src = url;
-      audio.play()
-        .then(() => console.log('[VoiceSession] <audio> playback started'))
-        .catch(e => { URL.revokeObjectURL(url); reject(new Error(`<audio>.play() failed: ${e}`)); });
+      reject(new Error('Audio playback failed on all paths'));
     });
   }
 
   private _stopAudio(): void {
-    if (this.stopCurrentAudio) {
-      this.stopCurrentAudio();
-      this.stopCurrentAudio = null;
-    }
+    if (this.stopCurrentAudio) { this.stopCurrentAudio(); this.stopCurrentAudio = null; }
     this.audioSource = null;
   }
 
-  /**
-   * Browser SpeechSynthesis fallback — picks the best available voice.
-   */
   private _browserSpeak(text: string, lang: string): Promise<void> {
     return new Promise<void>((resolve) => {
       if (!('speechSynthesis' in window)) { resolve(); return; }
       window.speechSynthesis.cancel();
-
-      const bcp47 = LANG_TO_BCP47[lang] || lang;
+      const bcp47  = LANG_TO_BCP47[lang] || lang;
       const prefix = bcp47.split('-')[0];
       const voices = this.cachedVoices.length ? this.cachedVoices : window.speechSynthesis.getVoices();
       const byLang = voices.filter(v => v.lang.startsWith(prefix));
@@ -458,29 +732,36 @@ export class VoiceSession {
         if (m) { voice = m; break; }
       }
       if (!voice) voice = byLang[0] ?? null;
-
       const u = new SpeechSynthesisUtterance(text);
       u.lang = bcp47;
-      u.rate = this.opts.speechSpeed ?? 0.95;
+      u.rate  = this.opts.speechSpeed ?? 0.95;
       u.pitch = 1.05;
       u.volume = 1;
       if (voice) u.voice = voice;
-
-      u.onend = () => resolve();
+      u.onend  = () => resolve();
       u.onerror = () => resolve();
-      // Safety — browser sometimes never fires onend
       setTimeout(() => resolve(), 10_000);
       window.speechSynthesis.speak(u);
     });
   }
 
-  /**
-   * Reset the 10-minute idle safety timer.
-   * Called on start, every restart (no-speech, onend), every speech result,
-   * and after every TTS reply. The session NEVER auto-stops from silence —
-   * it keeps listening indefinitely like ChatGPT voice mode. This timer is
-   * only a last-resort safeguard in case something goes wrong internally.
-   */
+  // ─── Private: timers ──────────────────────────────────────────────────────
+
+  private _abortRecognition(reason: string): void {
+    this.whisperLoopActive = false;
+    if (!this.recognition) return;
+    console.log(`[VoiceSession] aborting recognition (${reason})`);
+    try { this.recognition.abort(); } catch {}
+    this.recognition = null;
+  }
+
+  private _setPhase(p: VoicePhase): void {
+    if (this.phase === p) return;
+    console.log(`[VoiceSession] phase: ${this.phase} → ${p}`);
+    this.phase = p;
+    this.opts.onPhaseChange?.(p);
+  }
+
   private _resetSafetyTimer(): void {
     if (this.silenceTimer) clearTimeout(this.silenceTimer);
     this.silenceTimer = setTimeout(() => {
@@ -492,7 +773,7 @@ export class VoiceSession {
   private _clearAllTimers(): void {
     if (this.silenceTimer) { clearTimeout(this.silenceTimer); this.silenceTimer = null; }
     if (this.restartTimer) { clearTimeout(this.restartTimer); this.restartTimer = null; }
-    if (this.safetyTimer)  { clearTimeout(this.safetyTimer);  this.safetyTimer = null; }
+    if (this.safetyTimer)  { clearTimeout(this.safetyTimer);  this.safetyTimer  = null; }
   }
 
   private _cacheVoices(): void {
