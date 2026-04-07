@@ -1,0 +1,145 @@
+name: Dependency Audit
+
+# Runs every Monday at 9 AM UTC.
+# Scans all npm packages for known security vulnerabilities.
+# Opens a GitHub Issue automatically if critical or high severity
+# vulnerabilities are found — no manual checking needed.
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+jobs:
+  audit:
+    name: npm audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run security audit
+        id: audit
+        run: |
+          # Run audit and capture exit code (non-zero = vulnerabilities found)
+          set +e
+          npm audit --audit-level=high --json > /tmp/audit.json 2>&1
+          AUDIT_EXIT=$?
+          set -e
+
+          VULN_COUNT=$(cat /tmp/audit.json | python3 -c "
+          import sys, json
+          try:
+            d = json.load(sys.stdin)
+            meta = d.get('metadata', {}).get('vulnerabilities', {})
+            total = meta.get('critical', 0) + meta.get('high', 0)
+            print(total)
+          except:
+            print(0)
+          " 2>/dev/null || echo "0")
+
+          echo "vuln_count=$VULN_COUNT" >> "$GITHUB_OUTPUT"
+          echo "exit_code=$AUDIT_EXIT" >> "$GITHUB_OUTPUT"
+          echo "Found $VULN_COUNT critical/high vulnerabilities"
+          cat /tmp/audit.json | python3 -c "
+          import sys, json
+          try:
+            d = json.load(sys.stdin)
+            vulns = d.get('vulnerabilities', {})
+            for name, info in list(vulns.items())[:10]:
+              sev = info.get('severity', 'unknown')
+              if sev in ('critical', 'high'):
+                via = info.get('via', [])
+                titles = [v.get('title','?') if isinstance(v,dict) else str(v) for v in via]
+                print(f'  [{sev.upper()}] {name}: {\", \".join(titles[:2])}')
+          except Exception as e:
+            print(f'Could not parse audit output: {e}')
+          " 2>/dev/null || true
+
+      - name: Open issue if vulnerabilities found
+        if: steps.audit.outputs.vuln_count != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { readFileSync } = require('fs');
+            const title = '🔐 Security: high/critical npm vulnerabilities found';
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'security',
+            });
+
+            const existing = issues.find(i => i.title === title);
+            const body = [
+              '## Vulnerable dependencies detected',
+              '',
+              `- **Date:** ${new Date().toUTCString()}`,
+              `- **Count (critical + high):** ${{ steps.audit.outputs.vuln_count }}`,
+              '',
+              '**Fix command:**',
+              '```bash',
+              'npm audit fix',
+              '# or for breaking changes:',
+              'npm audit fix --force',
+              '```',
+              '',
+              'Run `npm audit` locally for full details.',
+              '',
+              'This issue closes automatically when no more critical/high vulnerabilities remain.',
+            ].join('\n');
+
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `Still vulnerable as of ${new Date().toUTCString()} — ${{ steps.audit.outputs.vuln_count }} critical/high issues.`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                labels: ['security'],
+                body,
+              });
+            }
+
+      - name: Close issue if clean
+        if: steps.audit.outputs.vuln_count == '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = '🔐 Security: high/critical npm vulnerabilities found';
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'security',
+            });
+            const existing = issues.find(i => i.title === title);
+            if (!existing) return;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: existing.number,
+              body: `✅ All critical/high vulnerabilities resolved as of ${new Date().toUTCString()}.`,
+            });
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: existing.number,
+              state: 'closed',
+            });

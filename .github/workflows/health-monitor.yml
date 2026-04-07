@@ -1,0 +1,126 @@
+name: Health Monitor
+
+# Runs every 5 minutes around the clock.
+# When the app goes down it automatically opens a GitHub Issue so you get
+# an email alert without watching anything.  When it recovers the issue is
+# closed automatically.
+#
+# SETUP (one-time):
+#   GitHub repo → Settings → Variables → Actions → New repository variable
+#   Name:  APP_URL
+#   Value: https://your-app.replit.app   (your deployed URL, no trailing slash)
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: # allow manual trigger from GitHub UI
+
+jobs:
+  check:
+    name: Ping /health
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Check app health
+        id: ping
+        run: |
+          APP_URL="${{ vars.APP_URL }}"
+          if [ -z "$APP_URL" ]; then
+            echo "APP_URL variable not set — skipping check"
+            echo "healthy=skip" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          HTTP=$(curl -s -o /tmp/body.json -w "%{http_code}" \
+            --max-time 10 --retry 2 --retry-delay 3 \
+            "$APP_URL/health" || echo "000")
+
+          echo "HTTP status: $HTTP"
+          cat /tmp/body.json 2>/dev/null || true
+
+          if [ "$HTTP" = "200" ]; then
+            echo "healthy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "healthy=false" >> "$GITHUB_OUTPUT"
+            echo "http_code=$HTTP" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open issue if down
+        if: steps.ping.outputs.healthy == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = '🚨 JunoTalk is DOWN';
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'outage',
+            });
+
+            const existing = issues.find(i => i.title === title);
+            if (existing) {
+              // Already open — add a note so you can see the duration
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `Still down at ${new Date().toUTCString()} — HTTP ${{ steps.ping.outputs.http_code }}`,
+              });
+              console.log('Issue already open, added comment');
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                labels: ['outage'],
+                body: [
+                  '## App is not responding',
+                  '',
+                  `- **Time:** ${new Date().toUTCString()}`,
+                  `- **URL:** ${{ vars.APP_URL }}/health`,
+                  `- **HTTP status:** ${{ steps.ping.outputs.http_code }}`,
+                  '',
+                  'This issue will close automatically when the health check passes.',
+                  '',
+                  '**To investigate:** check the Replit workflow logs.',
+                ].join('\n'),
+              });
+              console.log('Opened outage issue');
+            }
+
+      - name: Close issue if recovered
+        if: steps.ping.outputs.healthy == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = '🚨 JunoTalk is DOWN';
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'outage',
+            });
+
+            const existing = issues.find(i => i.title === title);
+            if (!existing) {
+              console.log('No open outage issue — all good');
+              return;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: existing.number,
+              body: `✅ Recovered at ${new Date().toUTCString()} — health check passing again.`,
+            });
+
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: existing.number,
+              state: 'closed',
+            });
+
+            console.log('Closed outage issue — app recovered');

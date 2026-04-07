@@ -1,0 +1,108 @@
+name: Deploy & CDN Sync
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Permissions needed for GitHub Pages deployment
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one deploy at a time; cancel any in-progress run
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  # ── 1. Build ───────────────────────────────────────────────────────────────
+  build:
+    name: Build frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript type check
+        run: npm run check
+        env:
+          DATABASE_URL: "postgresql://placeholder:placeholder@localhost:5432/placeholder"
+          SESSION_SECRET: "placeholder-session-secret-for-build"
+          GROQ_API_KEY: "placeholder"
+
+      - name: Build Vite frontend
+        run: npx vite build
+        env:
+          NODE_ENV: production
+          DATABASE_URL: "postgresql://placeholder:placeholder@localhost:5432/placeholder"
+          SESSION_SECRET: "placeholder-session-secret-for-build"
+          GROQ_API_KEY: "placeholder"
+
+      - name: Add SPA 404 fallback
+        # Copies index.html → 404.html so client-side routing works on GitHub Pages
+        run: cp dist/public/index.html dist/public/404.html
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/public
+
+  # ── 2. Deploy to GitHub Pages ──────────────────────────────────────────────
+  deploy-pages:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  # ── 3. Sync config files to CDN repo ──────────────────────────────────────
+  sync-cdn:
+    name: Sync CDN config
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Never let a missing/expired token fail the whole deploy pipeline
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Push config files to junotalk-cdn
+        run: |
+          if [ -z "$CDN_GITHUB_TOKEN" ]; then
+            echo "⚠️  CDN_GITHUB_TOKEN secret is not set — skipping CDN config sync."
+            echo "    To enable: GitHub repo → Settings → Secrets → Actions → New secret"
+            echo "    Name: CDN_GITHUB_TOKEN  Value: a PAT with write access to lasawno/junotalk-cdn"
+            exit 0
+          fi
+          node script/push-cdn-config.mjs
+        env:
+          CDN_GITHUB_TOKEN: ${{ secrets.CDN_GITHUB_TOKEN }}

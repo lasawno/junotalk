@@ -1,0 +1,93 @@
+name: Post-Deploy Smoke Test
+
+# Automatically runs after build-check passes on the main branch.
+# Waits 60 seconds for Replit to finish deploying, then verifies
+# the live app is actually serving real responses — not just a 200
+# from a half-started server.
+#
+# SETUP (one-time):
+#   GitHub repo → Settings → Variables → Actions → New repository variable
+#   Name:  APP_URL
+#   Value: https://your-app.replit.app
+
+on:
+  workflow_run:
+    workflows: ["Build Check"]
+    branches: [main]
+    types: [completed]
+
+jobs:
+  smoke:
+    name: Verify live deployment
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Wait for Replit to deploy
+        run: |
+          echo "Build passed. Waiting 60s for deployment to propagate..."
+          sleep 60
+
+      - name: Smoke test — /health
+        id: health
+        run: |
+          APP_URL="${{ vars.APP_URL }}"
+          if [ -z "$APP_URL" ]; then
+            echo "APP_URL not set — skipping smoke test"
+            exit 0
+          fi
+
+          for attempt in 1 2 3; do
+            HTTP=$(curl -s -o /tmp/health.json -w "%{http_code}" \
+              --max-time 15 "$APP_URL/health" || echo "000")
+            echo "Attempt $attempt — HTTP $HTTP"
+            cat /tmp/health.json || true
+
+            if [ "$HTTP" = "200" ]; then
+              echo "status=ok" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 20
+          done
+
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "http=$HTTP" >> "$GITHUB_OUTPUT"
+          exit 1
+
+      - name: Smoke test — auth endpoint
+        if: steps.health.outputs.status == 'ok'
+        run: |
+          APP_URL="${{ vars.APP_URL }}"
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 10 "$APP_URL/api/auth/user" || echo "000")
+          echo "Auth endpoint HTTP: $HTTP"
+          # 200 (logged out / no session) is the expected response
+          if [ "$HTTP" = "200" ]; then
+            echo "✅ Auth endpoint responding correctly"
+          else
+            echo "⚠️ Auth endpoint returned $HTTP — investigate"
+            exit 1
+          fi
+
+      - name: Report failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '⚠️ Deployment smoke test failed',
+              labels: ['deployment'],
+              body: [
+                '## Post-deploy smoke test did not pass',
+                '',
+                `- **Commit:** ${context.sha}`,
+                `- **Time:** ${new Date().toUTCString()}`,
+                `- **URL tested:** ${{ vars.APP_URL }}`,
+                '',
+                'The build passed but the live app did not respond correctly after deployment.',
+                'Check the Replit workflow logs for startup errors.',
+              ].join('\n'),
+            });
