@@ -3,23 +3,18 @@
  *
  * Drop this file into your JunoTalk `server/` folder.
  *
- * Required env vars on JunoTalk:
+ * Only 2 env vars needed on JunoTalk:
  *   JUNO_CORE_URL=https://junointelligencecore.replit.app
  *   JUNO_CORE_API_KEY=<your API key from Intelligence Core>
  *
- * Two-way connection:
- *   1. JunoTalk connects and reports what it's running (modules, engines, providers)
- *   2. Intelligence Core returns enrichment data (personality, knowledge, models)
- *
  * Usage in JunoTalk startup:
- *   import { connectToCore, startHeartbeat, fetchEnrichment } from './juno-core-client';
+ *   import { connectToCore, startHeartbeat } from './juno-core-client';
  *   await connectToCore();
  *   startHeartbeat();
  */
 
 const CORE_URL = () => process.env.JUNO_CORE_URL?.replace(/\/+$/, "") || "";
 const API_KEY = () => process.env.JUNO_CORE_API_KEY || "";
-const APP_URL = process.env.APP_URL || "https://junotalk.app";
 const TIMEOUT_MS = 8000;
 
 function authHeaders(): Record<string, string> {
@@ -92,10 +87,11 @@ export async function connectToCore(options?: {
   voiceAi?: Record<string, unknown>;
   llmProviders?: string[];
   featureFlags?: Record<string, boolean>;
+  appUrl?: string;
 }): Promise<void> {
   const result = await corePost<{ status: string; availableEndpoints?: Record<string, string> }>("/junotalk/connect", {
-    appUrl: APP_URL,
-    version: options?.version || process.env.APP_VERSION || "3.2.0",
+    appUrl: options?.appUrl || "https://junotalk.app",
+    version: options?.version || "3.2.0",
     activeModules: options?.activeModules || [
       "reasoning-engine",
       "personality-engine",
