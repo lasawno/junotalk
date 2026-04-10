@@ -15,6 +15,12 @@ import { ReplitConnectors } from "@replit/connectors-sdk";
 import { apiKeys } from "./api-keys";
 import { pushPrivateFile } from "./github-config";
 import { gatewayRequest } from "./ai-gateway";
+import {
+  isCoreConfigured,
+  fetchKnowledgeBrain,
+  fetchKnowledgeVector,
+  fetchKnowledgeCollection,
+} from "./juno-core-client";
 
 const KB_REPO   = "lasawno/Knowledge-Base-Integration";
 const KB_BRANCH = "main";
@@ -578,139 +584,92 @@ function dedup(entries: StoredEntry[]): StoredEntry[] {
 
 export async function syncKnowledgeBase(force = false): Promise<SyncStats> {
   if (!force && Date.now() - lastSyncTime < SYNC_TTL && brainEntries.length > 0) {
-    return { osint: 0, neo4j: 0, wikidata: 0, culture: 0, "user-context": 0, domain: 0, phrases: 0, languages: 0, intents: 0, personas: 0, regulations: 0, entities: 0, deduplicated: 0, total: brainEntries.length, timestamp: new Date(lastSyncTime).toISOString() };
+    return {
+      osint: 0, neo4j: 0, wikidata: 0, culture: 0,
+      "user-context": 0, domain: 0, phrases: 0, languages: 0,
+      intents: 0, personas: 0, regulations: 0, entities: 0,
+      deduplicated: 0, total: brainEntries.length,
+      timestamp: new Date(lastSyncTime).toISOString(),
+    };
   }
 
-  const [remoteBrain, remoteVector] = await Promise.all([
-    fetchRepoFile("brain/config.json"),
-    fetchRepoFile("vector/index_config.json"),
-  ]);
+  const useCore = isCoreConfigured();
+
+  // ── Load brain + vector config (Core first, GitHub fallback per file) ───────
+  let remoteBrain: any = null;
+  let remoteVector: any = null;
+
+  if (useCore) {
+    [remoteBrain, remoteVector] = await Promise.all([
+      fetchKnowledgeBrain().catch(() => null),
+      fetchKnowledgeVector().catch(() => null),
+    ]);
+  }
+
+  // Fallback to GitHub for whichever file the Core didn't return
+  if (!remoteBrain) remoteBrain = await fetchRepoFile("brain/config.json").catch(() => null);
+  if (!remoteVector) remoteVector = await fetchRepoFile("vector/index_config.json").catch(() => null);
+
   if (remoteBrain) brainConfig = { ...DEFAULT_BRAIN, ...remoteBrain };
   if (remoteVector) vectorConfig = { ...DEFAULT_VECTOR, ...remoteVector };
 
-  const stats: SyncStats = { osint: 0, neo4j: 0, wikidata: 0, culture: 0, "user-context": 0, domain: 0, phrases: 0, languages: 0, intents: 0, personas: 0, regulations: 0, entities: 0, deduplicated: 0, total: 0, timestamp: new Date().toISOString() };
+  const stats: SyncStats = {
+    osint: 0, neo4j: 0, wikidata: 0, culture: 0,
+    "user-context": 0, domain: 0, phrases: 0, languages: 0,
+    intents: 0, personas: 0, regulations: 0, entities: 0,
+    deduplicated: 0, total: 0, timestamp: new Date().toISOString(),
+  };
   let raw: StoredEntry[] = [];
 
-  if (brainConfig.sources.osint) {
-    try {
-      const files = await listFolder("osint");
-      for (const f of files) {
-        const data = await fetchRepoFile(f);
-        if (Array.isArray(data)) { const n = normaliseOsint(data); raw.push(...n); stats.osint += n.length; }
-      }
-    } catch (e: any) { console.warn("[KnowledgeSync] OSINT sync failed:", e.message); }
-  }
+  // ── Load all collections (Core first, GitHub fallback per collection) ───────
+  const COLLECTION_NORMALISERS: Record<string, (data: any[]) => StoredEntry[]> = {
+    osint:          normaliseOsint,
+    neo4j:          normaliseNeo4j,
+    wikidata:       normaliseWikidata,
+    culture:        normaliseCulture,
+    "user-context": normaliseUserContext,
+    domain:         normaliseDomain,
+    phrases:        normalisePhrase,
+    languages:      normaliseLanguage,
+    intents:        normaliseIntent,
+    personas:       normalisePersona,
+    regulations:    normaliseRegulation,
+    entities:       normaliseEntity,
+  };
 
-  if (brainConfig.sources.neo4j) {
-    try {
-      const files = await listFolder("neo4j");
-      for (const f of files) {
-        const data = await fetchRepoFile(f);
-        if (Array.isArray(data)) { const n = normaliseNeo4j(data); raw.push(...n); stats.neo4j += n.length; }
-      }
-    } catch (e: any) { console.warn("[KnowledgeSync] Neo4j sync failed:", e.message); }
-  }
+  for (const [collection, normalise] of Object.entries(COLLECTION_NORMALISERS)) {
+    const sourceKey = collection as keyof typeof brainConfig.sources;
+    if (brainConfig.sources[sourceKey] === false) continue;
 
-  if (brainConfig.sources.wikidata) {
     try {
-      const files = await listFolder("wikidata");
-      for (const f of files) {
-        const data = await fetchRepoFile(f);
-        if (Array.isArray(data)) { const n = normaliseWikidata(data); raw.push(...n); stats.wikidata += n.length; }
-      }
-    } catch (e: any) { console.warn("[KnowledgeSync] Wikidata sync failed:", e.message); }
-  }
+      let entries: any[] | null = null;
 
-  if (brainConfig.sources.culture !== false) {
-    try {
-      const files = await listFolder("culture");
-      for (const f of files) {
-        const data = await fetchRepoFile(f);
-        if (Array.isArray(data)) { const n = normaliseCulture(data); raw.push(...n); stats.culture += n.length; }
+      if (useCore) {
+        const resp = await fetchKnowledgeCollection(collection).catch(() => null) as
+          { data?: any[] } | null;
+        if (resp?.data && Array.isArray(resp.data)) {
+          entries = resp.data;
+        }
       }
-    } catch (e: any) { console.warn("[KnowledgeSync] Culture sync failed:", e.message); }
-  }
 
-  // ── Three new expansion sources ────────────────────────────────────────────
-
-  if (brainConfig.sources["user-context"] !== false) {
-    try {
-      const files = await listFolder("user-context");
-      for (const f of files) {
-        const data = await fetchRepoFile(f);
-        if (Array.isArray(data)) { const n = normaliseUserContext(data); raw.push(...n); stats["user-context"] += n.length; }
+      // Fallback: GitHub repo path (existing logic)
+      if (!entries) {
+        const files = await listFolder(collection);
+        entries = [];
+        for (const f of files) {
+          const data = await fetchRepoFile(f);
+          if (Array.isArray(data)) entries.push(...data);
+        }
       }
-    } catch (e: any) { console.warn("[KnowledgeSync] User-context sync failed:", e.message); }
-  }
 
-  if (brainConfig.sources.domain !== false) {
-    try {
-      const files = await listFolder("domain");
-      for (const f of files) {
-        const data = await fetchRepoFile(f);
-        if (Array.isArray(data)) { const n = normaliseDomain(data); raw.push(...n); stats.domain += n.length; }
+      if (entries && entries.length > 0) {
+        const normalised = normalise(entries);
+        raw.push(...normalised);
+        (stats as any)[collection] = normalised.length;
       }
-    } catch (e: any) { console.warn("[KnowledgeSync] Domain sync failed:", e.message); }
-  }
-
-  if (brainConfig.sources.phrases !== false) {
-    try {
-      const files = await listFolder("phrases");
-      for (const f of files) {
-        const data = await fetchRepoFile(f);
-        if (Array.isArray(data)) { const n = normalisePhrase(data); raw.push(...n); stats.phrases += n.length; }
-      }
-    } catch (e: any) { console.warn("[KnowledgeSync] Phrases sync failed:", e.message); }
-  }
-
-  if (brainConfig.sources.languages !== false) {
-    try {
-      const files = await listFolder("languages");
-      for (const f of files) {
-        const data = await fetchRepoFile(f);
-        if (Array.isArray(data)) { const n = normaliseLanguage(data); raw.push(...n); stats.languages += n.length; }
-      }
-    } catch (e: any) { console.warn("[KnowledgeSync] Languages sync failed:", e.message); }
-  }
-
-  if (brainConfig.sources.intents !== false) {
-    try {
-      const files = await listFolder("intents");
-      for (const f of files) {
-        const data = await fetchRepoFile(f);
-        if (Array.isArray(data)) { const n = normaliseIntent(data); raw.push(...n); stats.intents += n.length; }
-      }
-    } catch (e: any) { console.warn("[KnowledgeSync] Intents sync failed:", e.message); }
-  }
-
-  if (brainConfig.sources.personas !== false) {
-    try {
-      const files = await listFolder("personas");
-      for (const f of files) {
-        const data = await fetchRepoFile(f);
-        if (Array.isArray(data)) { const n = normalisePersona(data); raw.push(...n); stats.personas += n.length; }
-      }
-    } catch (e: any) { console.warn("[KnowledgeSync] Personas sync failed:", e.message); }
-  }
-
-  if (brainConfig.sources.regulations !== false) {
-    try {
-      const files = await listFolder("regulations");
-      for (const f of files) {
-        const data = await fetchRepoFile(f);
-        if (Array.isArray(data)) { const n = normaliseRegulation(data); raw.push(...n); stats.regulations += n.length; }
-      }
-    } catch (e: any) { console.warn("[KnowledgeSync] Regulations sync failed:", e.message); }
-  }
-
-  if (brainConfig.sources.entities !== false) {
-    try {
-      const files = await listFolder("entities");
-      for (const f of files) {
-        const data = await fetchRepoFile(f);
-        if (Array.isArray(data)) { const n = normaliseEntity(data); raw.push(...n); stats.entities += n.length; }
-      }
-    } catch (e: any) { console.warn("[KnowledgeSync] Entities sync failed:", e.message); }
+    } catch (e: any) {
+      console.warn(`[KnowledgeSync] ${collection} sync failed:`, e.message);
+    }
   }
 
   const deduped = dedup(raw);
@@ -719,12 +678,12 @@ export async function syncKnowledgeBase(force = false): Promise<SyncStats> {
   lastSyncTime = Date.now();
   stats.total = brainEntries.length;
 
-  // Push stats to private CDN telemetry — never exposed in server logs
+  // Push stats to private CDN telemetry
   const reasoning = !!getOpenRouterClient() ? "openrouter" : "keyword-only";
   pushPrivateFile(
     "telemetry/sync-stats.json",
-    { ...stats, syncedAt: new Date().toISOString(), reasoning },
-    `chore: sync-stats ${new Date().toISOString().slice(0, 10)}`
+    { ...stats, syncedAt: new Date().toISOString(), reasoning, source: useCore ? "intelligence-core" : "github" },
+    `chore: sync-stats ${new Date().toISOString().slice(0, 10)}`,
   ).catch(() => {});
 
   return stats;
