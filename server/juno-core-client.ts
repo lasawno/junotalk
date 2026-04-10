@@ -5,7 +5,7 @@
  *
  * Only 2 env vars needed on JunoTalk:
  *   JUNO_CORE_URL=https://junointelligencecore.replit.app
- *   JUNOCORE_KEY=<your API key from Intelligence Core>
+ *   JUNOCORE_API_KEY=<your API key from Intelligence Core>
  *
  * Usage in JunoTalk startup:
  *   import { connectToCore, startHeartbeat } from './juno-core-client';
@@ -14,7 +14,7 @@
  */
 
 const CORE_URL = () => process.env.JUNO_CORE_URL?.replace(/\/+$/, "") || "";
-const API_KEY = () => process.env.JUNOCORE_KEY || "";
+const API_KEY = () => process.env.JUNOCORE_API_KEY || "";
 const TIMEOUT_MS = 8000;
 
 function authHeaders(): Record<string, string> {
