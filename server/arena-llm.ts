@@ -12,6 +12,7 @@
  */
 
 import { fetchFromRepo, pushToRepo } from "./github-config";
+import { isCoreConfigured, fetchModelStack, fetchModelRegistry } from "./juno-core-client";
 
 const ARENA_OWNER    = "lasawno";
 const ARENA_REPO     = "Arena-LLM-stack-";
@@ -406,6 +407,56 @@ async function loadModelsFromArena(): Promise<void> {
 }
 
 async function loadFromArena(): Promise<void> {
+  const useCore = isCoreConfigured();
+
+  if (useCore) {
+    try {
+      const [stackResp, registryResp] = await Promise.all([
+        fetchModelStack<Record<string, any>>().catch(() => null),
+        fetchModelRegistry<{ models: ArenaModelEntry[] }>().catch(() => null),
+      ]);
+
+      if (stackResp && typeof stackResp === "object" && stackResp.models) {
+        _config = {
+          ...DEFAULT_CONFIG,
+          ...stackResp,
+          primary_provider: DEFAULT_CONFIG.primary_provider,
+          fallback_chain:   DEFAULT_CONFIG.fallback_chain,
+          models:           DEFAULT_CONFIG.models,
+          provider_timeouts_ms: {
+            ...(stackResp.provider_timeouts_ms || {}),
+            ...DEFAULT_CONFIG.provider_timeouts_ms,
+          },
+        } as ArenaLLMConfig;
+        _loadedAt = Date.now();
+        console.log(
+          `[ArenaLLM] Config loaded from Intelligence Core — v${_config._version} ` +
+          `(${_config._updated}), provider: ${_config.primary_provider}`,
+        );
+      }
+
+      if (registryResp?.models && Array.isArray(registryResp.models) && registryResp.models.length > 0) {
+        const localIds = new Set(DEFAULT_MODEL_REGISTRY.map((m) => m.id));
+        const mergedExtras = registryResp.models.filter((m) => !localIds.has(m.id));
+        _modelRegistry = [...DEFAULT_MODEL_REGISTRY, ...mergedExtras];
+        _modelsLoadedAt = Date.now();
+        console.log(
+          `[ArenaLLM] Model registry loaded from Intelligence Core — ${_modelRegistry.length} models`,
+        );
+      }
+
+      if (_loadedAt > 0 && _modelsLoadedAt > 0) return;
+      if (_loadedAt > 0 || _modelsLoadedAt > 0) {
+        console.warn("[ArenaLLM] Intelligence Core returned partial data — falling back to GitHub for the rest");
+      } else {
+        console.warn("[ArenaLLM] Intelligence Core returned no data — falling back to GitHub");
+      }
+    } catch (err: any) {
+      console.warn(`[ArenaLLM] Intelligence Core unreachable: ${err.message} — falling back to GitHub`);
+    }
+  }
+
+  // ── GitHub fallback (existing logic) ────────────────────────────────────────
   try {
     const [stackData] = await Promise.allSettled([
       fetchFromRepo(ARENA_OWNER, ARENA_REPO, CONFIG_PATH, ARENA_BRANCH),
@@ -414,13 +465,9 @@ async function loadFromArena(): Promise<void> {
     const data = stackData.status === "fulfilled" ? stackData.value : null;
     if (data && typeof data === "object" && (data as any).models) {
       const cdnData = data as any;
-      // Deep-merge: local defaults always win for provider routing and model selection
-      // to prevent stale CDN config from reinstating failing providers (e.g. openrouter).
-      // CDN may still supply feature_flags, persona, rate_limits, and version metadata.
       _config = {
         ...DEFAULT_CONFIG,
         ...cdnData,
-        // Core routing — local always wins
         primary_provider: DEFAULT_CONFIG.primary_provider,
         fallback_chain:   DEFAULT_CONFIG.fallback_chain,
         models:           DEFAULT_CONFIG.models,
@@ -430,7 +477,10 @@ async function loadFromArena(): Promise<void> {
         },
       };
       _loadedAt = Date.now();
-      console.log(`[ArenaLLM] Config loaded from CDN — v${_config._version} (${_config._updated}), provider: ${_config.primary_provider}, models: ${Object.keys(_config.models).join(", ")}`);
+      console.log(
+        `[ArenaLLM] Config loaded from CDN — v${_config._version} (${_config._updated}), ` +
+        `provider: ${_config.primary_provider}, models: ${Object.keys(_config.models).join(", ")}`,
+      );
     } else if (!_bootstrapped) {
       await bootstrapArenaRepo();
     }
