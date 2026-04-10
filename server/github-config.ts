@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir } from "fs/promises";
 import * as path from "path";
 // GitHub integration — uses @replit/connectors-sdk with OAuth proxy (no token in code)
 import { ReplitConnectors } from "@replit/connectors-sdk";
+import { isCoreConfigured, fetchConfig } from "./juno-core-client";
 
 const GITHUB_REPO = "lasawno/junotalk-cdn";
 const GITHUB_BRANCH = "main";
@@ -568,39 +569,45 @@ async function loadRemoteConfig(): Promise<void> {
   if (Date.now() - lastFetch < REFRESH_TTL && initialized) return;
 
   fetchInProgress = true;
+
   const configFiles = [
-    { key: "reasoning", path: "config/reasoning.json", defaults: DEFAULT_REASONING },
-    { key: "personality", path: "config/personality.json", defaults: DEFAULT_PERSONALITY },
-    { key: "modules", path: "config/modules.json", defaults: DEFAULT_MODULES },
-    { key: "authPolicy", path: "config/auth-policy.json", defaults: DEFAULT_AUTH_POLICY },
-    { key: "clientConfig", path: "config/client-config.json", defaults: DEFAULT_CLIENT_CONFIG },
+    { key: "reasoning", path: "config/reasoning.json", coreName: "reasoning", defaults: DEFAULT_REASONING },
+    { key: "personality", path: "config/personality.json", coreName: "personality", defaults: DEFAULT_PERSONALITY },
+    { key: "modules", path: "config/modules.json", coreName: "modules", defaults: DEFAULT_MODULES },
+    { key: "authPolicy", path: "config/auth-policy.json", coreName: "auth-policy", defaults: DEFAULT_AUTH_POLICY },
+    { key: "clientConfig", path: "config/client-config.json", coreName: "client-config", defaults: DEFAULT_CLIENT_CONFIG },
+  ];
+
+  const freeformFiles = [
+    { key: "safetyResponses", path: "config/safety-responses.json", coreName: "safety-responses" },
+    { key: "boundaryResponses", path: "config/boundary-responses.json", coreName: "boundary-responses" },
   ];
 
   let loadedCount = 0;
+  const useCore = isCoreConfigured();
 
-  // Lite model config — load separately and merge with defaults
   try {
-    const lmData = await fetchPrivateFile("config/lite-model.json");
+    // Lite model config
+    let lmData: any = null;
+    if (useCore) lmData = await fetchConfig("lite-model").catch(() => null);
+    if (!lmData) lmData = await fetchPrivateFile("config/lite-model.json").catch(() => null);
     if (lmData && typeof lmData === "object") {
       configCache.liteModel = mergeWithDefaults(lmData, DEFAULT_LITE_MODEL);
       loadedCount++;
-      console.log(`[GitHubConfig] Lite model loaded: ${configCache.liteModel.model} @ ${Math.round(configCache.liteModel.sample_rate * 100)}% (offline_fallback=${configCache.liteModel.offline_fallback})`);
-    } else {
-      console.log("[GitHubConfig] lite-model.json not found in CDN — using defaults (gemma-3-1b-it:free @ 25%)");
+      console.log(
+        `[GitHubConfig] Lite model loaded: ${configCache.liteModel.model} @ ` +
+        `${Math.round(configCache.liteModel.sample_rate * 100)}% ` +
+        `(offline_fallback=${configCache.liteModel.offline_fallback})` +
+        (useCore && lmData ? " [via Intelligence Core]" : ""),
+      );
     }
-  } catch (e: any) {
-    console.warn("[GitHubConfig] lite-model.json fetch error:", e.message);
-  }
 
-  const freeformFiles = [
-    { key: "safetyResponses", path: "config/safety-responses.json" },
-    { key: "boundaryResponses", path: "config/boundary-responses.json" },
-  ];
-
-  try {
+    // Structured configs
     for (const cf of configFiles) {
       try {
-        const data = await fetchPrivateFile(cf.path);
+        let data: any = null;
+        if (useCore) data = await fetchConfig(cf.coreName).catch(() => null);
+        if (!data) data = await fetchPrivateFile(cf.path).catch(() => null);
         if (data && typeof data === "object") {
           (configCache as any)[cf.key] = mergeWithDefaults(data, cf.defaults);
           loadedCount++;
@@ -608,9 +615,12 @@ async function loadRemoteConfig(): Promise<void> {
       } catch {}
     }
 
+    // Freeform configs (safety/boundary responses)
     for (const ff of freeformFiles) {
       try {
-        const data = await fetchPrivateFile(ff.path);
+        let data: any = null;
+        if (useCore) data = await fetchConfig(ff.coreName).catch(() => null);
+        if (!data) data = await fetchPrivateFile(ff.path).catch(() => null);
         if (data && typeof data === "object") {
           const { _comment, ...responses } = data as any;
           (configCache as any)[ff.key] = responses;
@@ -621,9 +631,10 @@ async function loadRemoteConfig(): Promise<void> {
 
     lastFetch = Date.now();
     if (loadedCount > 0) {
-      console.log(`[GitHubConfig] Loaded ${loadedCount} config(s) from GitHub CDN`);
+      const source = useCore ? "Intelligence Core" : "GitHub CDN";
+      console.log(`[GitHubConfig] Loaded ${loadedCount} config(s) from ${source}`);
     } else {
-      console.log(`[GitHubConfig] Using local defaults (no remote configs found)`);
+      console.log("[GitHubConfig] Using local defaults (no remote configs found)");
     }
   } catch (err: any) {
     console.warn("[GitHubConfig] Config fetch failed:", err.message);
