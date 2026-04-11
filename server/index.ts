@@ -15,6 +15,7 @@ import { initEmbeddingService } from "./embedding-service";
 import { supabaseStorageService } from "./supabase-storage";
 import { initProjectState } from "./project-state";
 import { initArenaLLM } from "./arena-llm";
+import { connectToCore } from "./juno-core-client";
 
 // ── Resilience: catch ALL unhandled errors so the server never fully crashes ──
 // Categorise: truly fatal errors (corrupted state) exit; recoverable ones log.
@@ -456,6 +457,11 @@ app.use((req, res, next) => {
         } catch { /* non-fatal */ }
         httpServer.removeAllListeners("error");
         startListening();
+
+  // Connect to Juno Intelligence Core (offload compute engines)
+  connectToCore().catch((err) => {
+    console.warn("[Startup] Intelligence Core connection deferred:", err?.message);
+  });
       }, 1000);
     } else {
       throw err;
