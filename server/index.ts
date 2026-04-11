@@ -457,11 +457,6 @@ app.use((req, res, next) => {
         } catch { /* non-fatal */ }
         httpServer.removeAllListeners("error");
         startListening();
-
-  // Connect to Juno Intelligence Core (offload compute engines)
-  connectToCore().catch((err) => {
-    console.warn("[Startup] Intelligence Core connection deferred:", err?.message);
-  });
       }, 1000);
     } else {
       throw err;
@@ -469,6 +464,11 @@ app.use((req, res, next) => {
   });
 
   startListening();
+
+  // Connect to Juno Intelligence Core (offload compute engines)
+  connectToCore().catch((err) => {
+    console.warn("[Startup] Intelligence Core connection deferred:", err?.message);
+  });
 
   // Tune keep-alive so connections don't outlive a load-balancer's idle timeout
   httpServer.keepAliveTimeout = 65_000;
